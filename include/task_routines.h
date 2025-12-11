@@ -4,7 +4,7 @@
 
 void routines_init(void);
 
-inline const TaskType *routines_get_by_name(const char *name);
+const TaskType *routines_get_by_name(const char *name);
 
 const TaskType *routines_get_all(int *count);
 
