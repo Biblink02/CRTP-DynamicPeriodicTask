@@ -1,8 +1,7 @@
 #ifndef TASK_H
 #define TASK_H
 #include <stdbool.h>
-#include <bits/pthreadtypes.h>
-
+#include <pthread.h>
 #include "constants.h"
 
 typedef struct {

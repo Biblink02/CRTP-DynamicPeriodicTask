@@ -5,7 +5,9 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g")
 
-# Enable testing
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+find_package(Threads REQUIRED)
+
 enable_testing()
 
 set(DYNAMIC_PERIODIC_TASK
@@ -18,3 +20,4 @@ set(DYNAMIC_PERIODIC_TASK
 
 add_executable(dynamic_periodic_task ${DYNAMIC_PERIODIC_TASK})
 target_include_directories(dynamic_periodic_task PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/include/utils)
+target_link_libraries(dynamic_periodic_task PRIVATE Threads::Threads rt)
