@@ -1,5 +1,5 @@
-#ifndef COMMON_DEFS_H
-#define COMMON_DEFS_H
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
 
 #define MAX_TASKS 10
 #define MAX_INSTANCES 20
