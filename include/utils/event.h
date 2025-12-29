@@ -13,7 +13,7 @@ typedef struct {
 
     union {
         char task_name[TASK_NAME_LEN];
-        int target_id;
+        long target_id;
     } payload;
 
     int client_fd;
