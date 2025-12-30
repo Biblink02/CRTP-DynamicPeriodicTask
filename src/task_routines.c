@@ -7,7 +7,9 @@
 static unsigned long long loops_per_ms = 0;
 
 static void task_func_A(void);
+
 static void task_func_B(void);
+
 static void task_func_C(void);
 
 static TaskType task_catalog[N_TASKS] = {
