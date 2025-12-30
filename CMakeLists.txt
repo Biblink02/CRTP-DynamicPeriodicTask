@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16.1)
 project(CRTP-DynamicPeriodicTask C)
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g")
@@ -29,8 +29,9 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration_tests.py
         DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/tests/stress_tests.py
+        DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_utils.py
         DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
 add_test(

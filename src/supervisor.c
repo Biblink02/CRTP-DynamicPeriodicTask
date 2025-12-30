@@ -50,25 +50,29 @@ void supervisor_push_event(Event ev) {
 }
 
 static Event queue_pop_blocking(void) {
-    Event ev;
     pthread_mutex_lock(&event_queue.mutex);
     while (event_queue.count == 0) {
         pthread_cond_wait(&event_queue.cond, &event_queue.mutex);
     }
-    ev = event_queue.buffer[event_queue.head];
+    const Event ev = event_queue.buffer[event_queue.head];
     event_queue.head = (event_queue.head + 1) % MAX_QUEUE_SIZE;
     event_queue.count--;
     pthread_mutex_unlock(&event_queue.mutex);
     return ev;
 }
 
+// Comparator for Rate Monotonic Scheduling (RMS): shorter period = higher priority
 static int compare_tasks_rm(const void *a, const void *b) {
     const TaskType *ta = *(const TaskType **) a;
     const TaskType *tb = *(const TaskType **) b;
     return (int) (ta->period_ms - tb->period_ms);
 }
 
-// Checks if the system is schedulable using Response Time Analysis
+/*
+ * Performs Response Time Analysis (RTA) to determine if adding a new task
+ * would violate any deadlines in the system.
+ * It assumes Fixed-Priority Preemptive Scheduling based on Rate Monotonic priorities.
+ */
 static int check_schedulability(const TaskType *candidate) {
     printf("[RTA] Starting Analysis. Candidate: %s (C=%ld, T=%ld)\n",
            candidate->name, candidate->wcet_ms, candidate->period_ms);
@@ -85,18 +89,19 @@ static int check_schedulability(const TaskType *candidate) {
 
     for (int i = 0; i < count; i++) {
         const TaskType *tau_i = temp_list[i];
-        double R = tau_i->wcet_ms;
+        double R = (double) tau_i->wcet_ms;
 
+        // Iteratively calculate response time including interference from higher priority tasks
         while (1) {
             double interference = 0;
             for (int j = 0; j < i; j++) {
                 const TaskType *tau_j = temp_list[j];
-                interference += ceil(R / tau_j->period_ms) * tau_j->wcet_ms;
+                interference += ceil(R / (double) tau_j->period_ms) * (double) tau_j->wcet_ms;
             }
 
-            double R_new = tau_i->wcet_ms + interference;
+            const double R_new = (double) tau_i->wcet_ms + interference;
 
-            if (R_new > tau_i->deadline_ms) {
+            if (R_new > (double) tau_i->deadline_ms) {
                 printf("[RTA] FAILED. Task %s R=%.1f > D=%ld\n", tau_i->name, R_new, tau_i->deadline_ms);
                 return 0;
             }
@@ -143,7 +148,7 @@ static void handle_activate(Event ev) {
 static void handle_deactivate(Event ev) {
     printf("[Supervisor] Processing DEACTIVATE ID %ld\n", ev.payload.target_id);
     char response[64];
-    int id = (int) ev.payload.target_id;
+    const int id = (int) ev.payload.target_id;
 
     if (runtime_stop_instance(id) == 0) {
         int found_idx = -1;
@@ -155,6 +160,7 @@ static void handle_deactivate(Event ev) {
         }
 
         if (found_idx != -1) {
+            // Compact the active set array
             for (int i = found_idx; i < active_count - 1; i++) {
                 active_set[i] = active_set[i + 1];
             }
@@ -175,7 +181,7 @@ void supervisor_loop(void) {
     printf("[Supervisor] Event Loop Started.\n");
 
     while (1) {
-        Event ev = queue_pop_blocking();
+        const Event ev = queue_pop_blocking();
         switch (ev.type) {
             case EV_ACTIVATE: handle_activate(ev);
                 break;

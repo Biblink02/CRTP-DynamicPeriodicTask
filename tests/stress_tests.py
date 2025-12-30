@@ -1,113 +1,32 @@
 import socket
-import subprocess
 import time
 import sys
-import os
 import threading
-import random
-import string
-import shutil
-
-# Configuration
-SERVER_EXE = "./dynamic_periodic_task"
-PORT = 8080
-HOST = "127.0.0.1"
-
-
-#  UTILS
-
-def get_server_command():
-    """Constructs the start command, using Valgrind if available."""
-    if not os.path.exists(SERVER_EXE):
-        print(f"Error: Executable {SERVER_EXE} not found.")
-        sys.exit(1)
-
-    valgrind_path = shutil.which("valgrind")
-
-    if valgrind_path:
-        print(f"[{os.path.basename(__file__)}] Valgrind detected. Running with memory checks.")
-        return [
-            valgrind_path,
-            "--leak-check=full",
-            "--show-leak-kinds=all",
-            "--track-origins=yes",
-            "--error-exitcode=1",  # Fail test on memory errors
-            SERVER_EXE
-        ]
-    else:
-        print(f"[{os.path.basename(__file__)}] Valgrind not found. Running natively.")
-        return [SERVER_EXE]
-
-
-def run_isolated(test_func):
-    """Executes a stress test with strict crash and memory checking."""
-    cmd = get_server_command()
-    is_valgrind = "valgrind" in cmd[0]
-
-    proc = None
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.5 if is_valgrind else 0.5)
-
-        if proc.poll() is not None:
-            print(f"FAIL: Server died immediately (Exit code: {proc.returncode})")
-            return False
-
-        print(f"\n=== RUNNING: {test_func.__name__} ===")
-        logic_passed = test_func()
-
-        if proc.poll() is not None:
-            print(f"FAIL: Server crashed during test (Exit code: {proc.returncode})")
-            return False
-
-    except Exception as e:
-        print(f"CRASH/EXCEPT: {e}")
-        return False
-
-    finally:
-        valgrind_error = False
-        if proc:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-
-            if is_valgrind and proc.returncode == 1:
-                print(f"FAIL: Valgrind detected Memory Leaks/Errors!")
-                valgrind_error = True
-
-    if logic_passed and not valgrind_error:
-        print(f"PASS: {test_func.__name__}")
-        return True
-    else:
-        print(f"FAIL: {test_func.__name__}")
-        return False
-
-
-#  STRESS SCENARIOS
+from test_utils import run_test_isolated, HOST, PORT
 
 def test_fuzzing_garbage():
-    """Sends binary data, huge strings and malformed commands."""
+    """
+    Stress-tests the protocol parser.
+    Sends massive strings, binary data, and delimiters to ensure buffer handling
+    does not cause segmentation faults or buffer overflows.
+    """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((HOST, PORT))
 
-        # Huge Payload
-        huge_payload = "ACTIVATE " + "A" * 4000
-        sock.sendall(huge_payload.encode())
+        # 1. Buffer Overflow Attempt (Huge Payload)
+        sock.sendall(("ACTIVATE " + "A" * 4000).encode())
 
-        # Null chars and binary
-        bad_bytes = b"\x00\xFF\x01\x02 ACTIVATE t1 \n \r \x00"
-        sock.sendall(bad_bytes)
+        # 2. Binary Fuzzing (Bad bytes)
+        sock.sendall(b"\x00\xFF\x01\x02 ACTIVATE t1 \n \r \x00")
 
-        # Newline spam
+        # 3. Delimiter Spam
         sock.sendall(b"\n\n\n\n\r\n")
         sock.close()
 
-        # Check server vitality
-        time.sleep(0.2)
+        # Verification: Server must still answer a valid request
         sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock2.settimeout(2.0)
         sock2.connect((HOST, PORT))
         sock2.sendall(b"ACTIVATE t1\n")
         resp = sock2.recv(1024).decode()
@@ -117,11 +36,14 @@ def test_fuzzing_garbage():
         print(f"Server died during fuzzing: {e}")
         return False
 
-
 def test_connection_storm():
-    """Attempts to open many concurrent connections."""
+    """
+    Simulates high-concurrency connection attempts.
+    Verifies that the accept() loop correctly handles backlog and
+    does not leave sockets in a zombie state.
+    """
     connections = []
-    n_threads = 50
+    n_threads = 50  # Matches or exceeds server MAX_CLIENTS
     success_count = 0
     lock = threading.Lock()
 
@@ -147,7 +69,7 @@ def test_connection_storm():
     print(f"   Opened {success_count} concurrent connections.")
     if success_count == 0: return False
 
-    # Check server vitality
+    # Verification: Server must still be reachable
     try:
         check = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         check.connect((HOST, PORT))
@@ -156,15 +78,18 @@ def test_connection_storm():
     except:
         return False
 
-
 def test_queue_overflow():
-    """Spams commands to fill the event queue."""
+    """
+    Floods the command queue faster than the supervisor can process them.
+    Verifies that the fixed-size event queue handles overflow gracefully (dropping events)
+    without crashing.
+    """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((HOST, PORT))
 
-        burst = "ACTIVATE t1\n" * 100
-        sock.sendall(burst.encode())
+        # Send 100 commands in a single burst (exceeds queue size of 20)
+        sock.sendall(("ACTIVATE t1\n" * 100).encode())
 
         sock.settimeout(2.0)
         responses = ""
@@ -179,28 +104,63 @@ def test_queue_overflow():
 
         total_replies = responses.count("OK") + responses.count("ERR")
         print(f"   Sent 100 cmds. Received {total_replies} replies.")
-
         if total_replies == 0: return False
 
+        # Verification: Vitality check
         s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s2.connect((HOST, PORT))
         s2.close()
         return True
-    except Exception as e:
+    except:
         return False
 
+def test_rapid_churn_cycle():
+    """
+    Stress-tests memory management and ID allocation logic.
+    Rapidly activates and deactivates tasks to ensure memory is correctly freed
+    and thread resources are reclaimed (pthread_join validation).
+    """
+    print("\n=== RUNNING: test_rapid_churn_cycle ===")
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect((HOST, PORT))
+        iterations = 100
+
+        for i in range(iterations):
+            sock.sendall(b"a t1\n")
+            resp = sock.recv(1024).decode()
+            if "ID=" not in resp: return False
+            try:
+                tid = int(resp.strip().split("ID=")[1])
+            except: return False
+
+            sock.sendall(f"d {tid}\n".encode())
+            resp_deact = sock.recv(1024).decode()
+            if "OK" not in resp_deact: return False
+
+        sock.close()
+        print(f"   Completed {iterations} cycles successfully.")
+        return True
+    except Exception as e:
+        print(f"CRASH/EXCEPT in churn test: {e}")
+        return False
 
 def test_rapid_connect_disconnect():
-    """Rapidly opens and closes connections."""
+    """
+    Tests the robustness of the I/O multiplexing loop.
+    Rapidly opens and closes connections to ensure file descriptors are
+    correctly closed and removed from the polling set.
+    """
     try:
-        cycles = 50
-        for i in range(cycles):
+        for i in range(50):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((HOST, PORT))
+            # Inject garbage occasionally to test parser resilience
             if i % 2 == 0: s.sendall(b"GARBAGE")
             s.close()
 
-        # Final Check
+        # Verification: Server must accept a new valid connection
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((HOST, PORT))
         s.sendall(b"ACTIVATE t1\n")
@@ -210,20 +170,18 @@ def test_rapid_connect_disconnect():
     except:
         return False
 
-
-#  MAIN
-
 if __name__ == "__main__":
     tests = [
         test_fuzzing_garbage,
         test_queue_overflow,
         test_connection_storm,
-        test_rapid_connect_disconnect
+        test_rapid_connect_disconnect,
+        test_rapid_churn_cycle
     ]
 
     passed = 0
-    for t in tests:
-        if run_isolated(t): passed += 1
+    for test in tests:
+        if run_test_isolated(test): passed += 1
 
     print(f"\nSTRESS TEST SUMMARY: {passed}/{len(tests)} Passed")
     sys.exit(0 if passed == len(tests) else 1)

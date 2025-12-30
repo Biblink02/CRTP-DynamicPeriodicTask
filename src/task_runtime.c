@@ -4,7 +4,7 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <string.h>
-#include <errno.h>
+#include <sched.h>
 #include "task_runtime.h"
 
 static TaskInstance instance_pool[MAX_INSTANCES];
@@ -25,11 +25,11 @@ static void high_precision_sleep(long long ns) {
 }
 
 static void *task_thread_entry(void *arg) {
-    TaskInstance *inst = (TaskInstance *) arg;
+    const TaskInstance *inst = arg;
     printf("[Runtime] Thread for Task ID %d (%s) started\n", inst->id, inst->type->name);
 
     struct timespec t_start, t_now;
-    long long period_ns = inst->type->period_ms * 1000000LL;
+    const long long period_ns = inst->type->period_ms * 1000000LL;
 
     while (!inst->stop) {
         clock_gettime(CLOCK_MONOTONIC, &t_start);
@@ -38,10 +38,13 @@ static void *task_thread_entry(void *arg) {
             inst->type->routine_fn();
         }
 
-        // Drift Compensation to ensure period accuracy
+        /* * Drift Compensation:
+         * Calculate elapsed time and subtract it from the period.
+         * This prevents execution errors from accumulating over time.
+         */
         clock_gettime(CLOCK_MONOTONIC, &t_now);
-        long long elapsed_ns = timespec_diff_ns(t_start, t_now);
-        long long sleep_ns = period_ns - elapsed_ns;
+        const long long elapsed_ns = timespec_diff_ns(t_start, t_now);
+        const long long sleep_ns = period_ns - elapsed_ns;
 
         if (sleep_ns > 0) {
             high_precision_sleep(sleep_ns);
@@ -60,7 +63,7 @@ void runtime_init(void) {
         instance_pool[i].active = false;
         instance_pool[i].id = -1;
     }
-    atomic_init(&global_id_counter, 1);
+    atomic_store(&global_id_counter, 1);
     pthread_mutex_unlock(&pool_mutex);
     printf("[Runtime] Pool initialized. Capacity: %d\n", MAX_INSTANCES);
 }
@@ -89,13 +92,36 @@ int runtime_create_instance(const TaskType *type) {
     inst->stop = false;
     inst->active = true;
 
-    if (pthread_create(&inst->thread, NULL, task_thread_entry, inst) != 0) {
+    pthread_attr_t attr;
+    struct sched_param param;
+
+    pthread_attr_init(&attr);
+    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+    // Set Real-Time FIFO policy to ensure strict priority adherence
+    pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
+
+    /* * Map Period to Priority (Rate Monotonic):
+     * Shorter period = Higher priority (1-99).
+     * Heuristic: 95 - (period / 50).
+     */
+    int prio = 95 - (int) (type->period_ms / 50);
+    if (prio < 1) prio = 1;
+    if (prio > 99) prio = 99;
+
+    param.sched_priority = prio;
+    pthread_attr_setschedparam(&attr, &param);
+
+    printf("[Runtime] Creating Task %s with SCHED_FIFO Priority %d\n", type->name, prio);
+
+    if (pthread_create(&inst->thread, &attr, task_thread_entry, inst) != 0) {
         inst->active = false;
+        pthread_attr_destroy(&attr);
         pthread_mutex_unlock(&pool_mutex);
-        perror("[Runtime] pthread_create failed");
+        perror("[Runtime] pthread_create failed (Check permissions/ulimit)");
         return -1;
     }
 
+    pthread_attr_destroy(&attr);
     int created_id = inst->id;
     pthread_mutex_unlock(&pool_mutex);
 
@@ -147,4 +173,37 @@ int runtime_get_active_instances(TaskInstance **out_instances, int max_len) {
     }
     pthread_mutex_unlock(&pool_mutex);
     return count;
+}
+
+void runtime_cleanup(void) {
+    // Signal all active tasks to stop
+    pthread_mutex_lock(&pool_mutex);
+    for (int i = 0; i < MAX_INSTANCES; i++) {
+        if (instance_pool[i].active) {
+            instance_pool[i].stop = true;
+        }
+    }
+    pthread_mutex_unlock(&pool_mutex);
+
+    // Join all threads to ensure proper resource deallocation
+    for (int i = 0; i < MAX_INSTANCES; i++) {
+        pthread_t thread_handle = 0;
+        int id = -1;
+        bool needs_join = false;
+
+        pthread_mutex_lock(&pool_mutex);
+        if (instance_pool[i].active) {
+            thread_handle = instance_pool[i].thread;
+            id = instance_pool[i].id;
+            needs_join = true;
+        }
+        pthread_mutex_unlock(&pool_mutex);
+
+        if (needs_join) {
+            printf("[Runtime] Shutdown: Joining Task ID %d...\n", id);
+            pthread_join(thread_handle, NULL);
+            printf("[Runtime] Task ID %d joined.\n", id);
+        }
+    }
+    printf("[Runtime] Cleanup complete. All tasks stopped.\n");
 }

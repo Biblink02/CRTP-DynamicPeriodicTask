@@ -10,4 +10,5 @@ int runtime_stop_instance(int id);
 
 int runtime_get_active_instances(TaskInstance **out_instances, int max_len);
 
+void runtime_cleanup(void);
 #endif
