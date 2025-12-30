@@ -5,6 +5,7 @@
 typedef enum {
     EV_ACTIVATE,
     EV_DEACTIVATE,
+    EV_LIST,
     EV_SHUTDOWN
 } EventType;
 
@@ -23,6 +24,7 @@ static const char *event_type_to_string(const EventType t) {
     switch (t) {
         case EV_ACTIVATE: return "EV_ACTIVATE";
         case EV_DEACTIVATE: return "EV_DEACTIVATE";
+        case EV_LIST: return "EV_LIST";
         case EV_SHUTDOWN: return "EV_SHUTDOWN";
         default: return "UNKNOWN_EVENT";
     }

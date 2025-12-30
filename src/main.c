@@ -28,6 +28,13 @@ void *network_thread_func(void *arg) {
         net_poll();
         usleep(1000);
     }
+    return NULL;
+}
+
+void *supervisor_thread_func(void *arg) {
+    // Blocks here until the system shuts down via event
+    supervisor_loop();
+    return NULL;
 }
 
 int main(void) {
@@ -53,11 +60,23 @@ int main(void) {
     }
     printf("[Main] Network thread created successfully.\n");
 
-    // Transfer control to the blocking supervisor event loop
-    printf("[Main] Handing over control to Supervisor Loop...\n");
-    supervisor_loop();
+    pthread_t sv_thread;
+    if (pthread_create(&sv_thread, NULL, supervisor_thread_func, NULL) != 0) {
+        fprintf(stderr, "[Main] CRITICAL: Error creating supervisor thread\n");
+        // Clean up network before exiting
+        pthread_cancel(net_thread);
+        pthread_join(net_thread, NULL);
+        net_cleanup();
+        return EXIT_FAILURE;
+    }
+    printf("[Main] Supervisor thread created successfully.\n");
+
+    // Wait for the supervisor to complete (triggered by Shutdown event)
+    pthread_join(sv_thread, NULL);
+    printf("[Main] Supervisor thread has exited.\n");
 
     // Graceful shutdown sequence
+    printf("[Main] Stopping network thread...\n");
     pthread_cancel(net_thread);
     pthread_join(net_thread, NULL);
 
@@ -66,5 +85,6 @@ int main(void) {
     printf("[Main] Stopping active tasks...\n");
     runtime_cleanup();
 
+    printf("[Main] System Shutdown Complete.\n");
     return EXIT_SUCCESS;
 }

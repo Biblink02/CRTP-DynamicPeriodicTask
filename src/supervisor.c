@@ -132,7 +132,7 @@ static void handle_activate(Event ev) {
         return;
     }
 
-    int id = runtime_create_instance(task);
+    const int id = runtime_create_instance(task);
     if (id < 0) {
         snprintf(response, sizeof(response), "ERR System Full\n");
     } else {
@@ -145,7 +145,7 @@ static void handle_activate(Event ev) {
     net_send_response(ev.client_fd, response);
 }
 
-static void handle_deactivate(Event ev) {
+static void handle_deactivate(const Event ev) {
     printf("[Supervisor] Processing DEACTIVATE ID %ld\n", ev.payload.target_id);
     char response[64];
     const int id = (int) ev.payload.target_id;
@@ -173,6 +173,36 @@ static void handle_deactivate(Event ev) {
     net_send_response(ev.client_fd, response);
 }
 
+static void handle_list(const Event ev) {
+    // Large buffer to hold the multiline string. NET_RESPONSE_BUF_SIZE is 4096.
+    char response[NET_RESPONSE_BUF_SIZE - 64];
+    int offset = 0;
+
+    offset += snprintf(response + offset, sizeof(response) - offset, "Active Count: %d\n", active_count);
+
+    if (active_count == 0) {
+        offset += snprintf(response + offset, sizeof(response) - offset, "  (No active tasks)\n");
+    } else {
+        for (int i = 0; i < active_count; i++) {
+            // Prevent buffer overflow
+            if (sizeof(response) - offset < 100) {
+                offset += snprintf(response + offset, sizeof(response) - offset, "  ... (list truncated)\n");
+                break;
+            }
+            offset += snprintf(response + offset, sizeof(response) - offset,
+                               "  [ID %d] Name: %s | C: %ld | T: %ld | D: %ld\n",
+                               active_set[i].instance_id,
+                               active_set[i].type->name,
+                               active_set[i].type->wcet_ms,
+                               active_set[i].type->period_ms,
+                               active_set[i].type->deadline_ms
+            );
+        }
+    }
+
+    net_send_response(ev.client_fd, response);
+}
+
 void supervisor_loop(void) {
     queue_init();
     routines_init();
@@ -190,6 +220,7 @@ void supervisor_loop(void) {
             case EV_SHUTDOWN:
                 printf("[Supervisor] Shutdown signal received.\n");
                 return;
+            case EV_LIST: handle_list(ev);
             default: break;
         }
     }

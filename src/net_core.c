@@ -74,8 +74,7 @@ static void process_buffer(const int fd, char *buffer) {
         ev.type = EV_ACTIVATE;
         strncpy(ev.payload.task_name, arg, TASK_NAME_LEN - 1);
         supervisor_push_event(ev);
-    }
-    else if (strcasecmp(cmd, "DEACTIVATE") == 0 || strcasecmp(cmd, "D") == 0) {
+    } else if (strcasecmp(cmd, "DEACTIVATE") == 0 || strcasecmp(cmd, "D") == 0) {
         if (tokens < 2) {
             net_send_response(fd, "ERR Missing ID\n");
             return;
@@ -89,12 +88,14 @@ static void process_buffer(const int fd, char *buffer) {
         } else {
             net_send_response(fd, "ERR Invalid ID Format\n");
         }
+    } else if (strcasecmp(cmd, "LIST") == 0 || strcasecmp(cmd, "L") == 0) {
+        ev.type = EV_LIST;
+        supervisor_push_event(ev);
     } else if (strcasecmp(cmd, "SHUTDOWN") == 0 || strcasecmp(cmd, "S") == 0) {
         net_send_response(fd, "OK Shutting Down\n");
         ev.type = EV_SHUTDOWN;
         supervisor_push_event(ev);
-    }
-    else {
+    } else {
         net_send_response(fd, "ERR Unknown Command\n");
     }
 }

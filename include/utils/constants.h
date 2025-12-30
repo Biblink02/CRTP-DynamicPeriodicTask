@@ -2,15 +2,25 @@
 #define CONSTANTS_H
 
 #define MAX_CLIENTS 25
+
 #define BACKLOG_SIZE 5
+
 #define MAX_TASKS 10
+
 #define MAX_INSTANCES 20
+
 #define TASK_NAME_LEN 32
+
 #define SERVER_PORT 8080
+
 #define MAX_QUEUE_SIZE 20
+
 #define N_TASKS 3
+
 #define NET_BUFFER_SIZE 1024
+
 #define NET_RESPONSE_BUF_SIZE 4096
+
 #define CPU_NUMBER 0
 
 #endif

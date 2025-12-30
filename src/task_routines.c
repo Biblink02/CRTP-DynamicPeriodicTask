@@ -17,29 +17,37 @@ static TaskType task_catalog[N_TASKS] = {
 };
 
 /*
- * Calculates the number of empty loop iterations required to consume approx. 1ms of CPU time.
- * This calibration is necessary because loop execution speed varies based on hardware
- * and compiler optimizations (-O3).
+ * Calibrates the CPU by running a fixed number of iterations and measuring the time taken.
+ * This avoids the overhead of calling clock_gettime() inside the loop.
  */
 static void calibrate_cpu(void) {
     struct timespec start, end;
     unsigned long long count = 0;
-    const int calibration_time_ns = 100000000; // 100 ms
+
+    // Use a large fixed number of iterations for calibration
+    const unsigned long long calibration_loops = 100000000ULL;
+
+    printf("[Routines] Calibrating CPU (Wait a moment)...\n");
 
     clock_gettime(CLOCK_MONOTONIC, &start);
-    while (1) {
-        // Inline assembly prevents the compiler from optimizing away the busy-wait loop
-        __asm__ volatile ("" : "+g" (count) : : );
-        count++;
 
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        long long diff = (end.tv_sec - start.tv_sec) * 1000000000LL +
-                         (end.tv_nsec - start.tv_nsec);
-        if (diff >= calibration_time_ns) break;
+    for (count = 0; count < calibration_loops; count++) {
+        __asm__ volatile ("" : "+g" (count) : : );
     }
 
-    loops_per_ms = count / 100;
-    printf("[Routines] Calibration done: %llu loops per ms\n", loops_per_ms);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    long long diff_ns = (end.tv_sec - start.tv_sec) * 1000000000LL +
+                        (end.tv_nsec - start.tv_nsec);
+
+    // Avoid division by zero
+    if (diff_ns == 0) diff_ns = 1;
+
+    // Calculate loops per nanosecond, then multiply for ms
+    loops_per_ms = calibration_loops * 1000000LL / diff_ns;
+
+    printf("[Routines] Calibration done: %lld ns for %llu loops -> %llu loops/ms\n",
+           diff_ns, calibration_loops, loops_per_ms);
 }
 
 /*
