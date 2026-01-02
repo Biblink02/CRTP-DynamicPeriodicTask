@@ -77,7 +77,7 @@ void net_poll(void) {
     int ret = poll(poll_fds, MAX_CLIENTS + 1, 100);
     if (ret <= 0) return;
 
-    // 1. Accept new connections
+    // Accept new connections
     if (poll_fds[0].revents & POLLIN) {
         int new_sock = accept(poll_fds[0].fd, NULL, NULL);
         if (new_sock >= 0) {
@@ -100,7 +100,7 @@ void net_poll(void) {
         }
     }
 
-    // 2. Handle data from clients
+    // Handle data from clients
     for (int i = 1; i <= MAX_CLIENTS; i++) {
         if (poll_fds[i].fd == -1) continue;
 

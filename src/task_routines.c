@@ -7,7 +7,9 @@
 static unsigned long long loops_per_ms = 0;
 
 static void task_A(void);
+
 static void task_B(void);
+
 static void task_C(void);
 
 static TaskType task_catalog[N_TASKS] = {
@@ -19,7 +21,7 @@ static TaskType task_catalog[N_TASKS] = {
 // Use volatile to prevent compiler from optimizing away the loop
 static inline void workload(double i) {
     volatile double r = sqrt(i) * 0.001 + sin(i / 1000.0);
-    (void)r;
+    (void) r;
 }
 
 static void calibrate(void) {
@@ -30,9 +32,9 @@ static void calibrate(void) {
     printf("[Routines] Calibrating CPU (target: 100ms sample)...\n");
     clock_gettime(CLOCK_MONOTONIC, &s);
     do {
-        workload((double)count++);
+        workload((double) count++);
         clock_gettime(CLOCK_MONOTONIC, &e);
-    } while ((e.tv_sec - s.tv_sec) * 1e9 + (e.tv_nsec - s.tv_nsec) < target_ns);
+    } while ((double) (e.tv_sec - s.tv_sec) * 1e9 + (double) (e.tv_nsec - s.tv_nsec) < (double) target_ns);
 
     loops_per_ms = count / 100;
     printf("[Routines] Calibration done: %llu loops/ms\n", loops_per_ms);
@@ -40,7 +42,7 @@ static void calibrate(void) {
 
 static void burn(long ms) {
     unsigned long long max = loops_per_ms * ms;
-    for (unsigned long long i = 0; i < max; i++) workload((double)i);
+    for (unsigned long long i = 0; i < max; i++) workload((double) i);
 }
 
 static void task_A(void) { burn(50); }

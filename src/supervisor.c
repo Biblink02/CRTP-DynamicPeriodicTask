@@ -79,32 +79,32 @@ static int check_rta(const TaskType *candidate) {
     pthread_mutex_unlock(&active_mutex);
     tasks[count++] = candidate;
 
-    // 1. Utilization Test (Necessary Condition)
+    // Utilization Test (Necessary Condition)
     double util = 0;
     for (int i = 0; i < count; i++) {
-        util += (double)tasks[i]->wcet_ms / (double)tasks[i]->period_ms;
+        util += (double) tasks[i]->wcet_ms / (double) tasks[i]->period_ms;
     }
     if (util > 1.0) {
         printf("[RTA] Rejected %s: Utilization %.2f > 1.0\n", candidate->name, util);
         return 0;
     }
 
-    // 2. Response Time Analysis (Sufficient Condition)
+    // Response Time Analysis (Sufficient Condition)
     qsort(tasks, count, sizeof(const TaskType *), compare_period);
 
     for (int i = 0; i < count; i++) {
-        double R = (double)tasks[i]->wcet_ms;
+        double R = (double) tasks[i]->wcet_ms;
         double R_new = R;
         int converged = 0;
 
         for (int k = 0; k < 100; k++) {
             double I = 0;
             for (int j = 0; j < i; j++) {
-                I += ceil(R / (double)tasks[j]->period_ms) * (double)tasks[j]->wcet_ms;
+                I += ceil(R / (double) tasks[j]->period_ms) * (double) tasks[j]->wcet_ms;
             }
-            R_new = (double)tasks[i]->wcet_ms + I;
+            R_new = (double) tasks[i]->wcet_ms + I;
 
-            if (R_new > (double)tasks[i]->deadline_ms) {
+            if (R_new > (double) tasks[i]->deadline_ms) {
                 printf("[RTA] Rejected %s: R=%.1f > D=%ld\n", candidate->name, R_new, tasks[i]->deadline_ms);
                 return 0;
             }
@@ -221,10 +221,14 @@ void supervisor_loop(void) {
     while (1) {
         Event ev = queue_pop();
         switch (ev.type) {
-            case EV_ACTIVATE: handle_activate(ev); break;
-            case EV_DEACTIVATE: handle_deactivate(ev); break;
-            case EV_LIST: handle_list(ev); break;
-            case EV_INFO: handle_info(ev); break;
+            case EV_ACTIVATE: handle_activate(ev);
+                break;
+            case EV_DEACTIVATE: handle_deactivate(ev);
+                break;
+            case EV_LIST: handle_list(ev);
+                break;
+            case EV_INFO: handle_info(ev);
+                break;
             case EV_SHUTDOWN:
                 printf("[Supervisor] Shutdown signal received.\n");
                 return;

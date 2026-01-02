@@ -14,7 +14,7 @@ static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int id_counter = 1;
 
 static long long diff_ns(struct timespec t1, struct timespec t2) {
-    return (long long)(t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
+    return (long long) (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
 }
 
 static void *thread_entry(void *arg) {
@@ -75,7 +75,10 @@ int runtime_create_instance(const TaskType *type) {
     pthread_mutex_lock(&pool_mutex);
     int idx = -1;
     for (int i = 0; i < MAX_INSTANCES; i++) {
-        if (!pool[i].active) { idx = i; break; }
+        if (!pool[i].active) {
+            idx = i;
+            break;
+        }
     }
 
     if (idx == -1) {
@@ -98,7 +101,7 @@ int runtime_create_instance(const TaskType *type) {
 
     // RMS: Higher frequency = Higher Priority
     // Mapped to range [1, 90] to leave room for system threads
-    int prio = 90 - (int)(type->period_ms / 100);
+    int prio = 90 - (int) (type->period_ms / 100);
     param.sched_priority = (prio < 1) ? 1 : (prio > 90) ? 90 : prio;
     pthread_attr_setschedparam(&attr, &param);
 
@@ -120,7 +123,10 @@ int runtime_stop_instance(int id) {
     pthread_mutex_lock(&pool_mutex);
     int idx = -1;
     for (int i = 0; i < MAX_INSTANCES; i++) {
-        if (pool[i].active && pool[i].id == id) { idx = i; break; }
+        if (pool[i].active && pool[i].id == id) {
+            idx = i;
+            break;
+        }
     }
 
     if (idx == -1) {
