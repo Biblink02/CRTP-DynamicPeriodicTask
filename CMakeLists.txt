@@ -14,6 +14,7 @@ set(DYNAMIC_PERIODIC_TASK
         src/supervisor.c
         src/task_routines.c
         src/task_runtime.c
+        src/utils/event.c
 )
 
 add_executable(dynamic_periodic_task ${DYNAMIC_PERIODIC_TASK})

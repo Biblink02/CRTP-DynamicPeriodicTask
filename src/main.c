@@ -4,87 +4,97 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdatomic.h>
+#include <errno.h>
+#include <signal.h>
 #include "supervisor.h"
 #include "net_core.h"
 #include "constants.h"
 #include "task_runtime.h"
+#include "task_routines.h"
 
-static int set_single_core_affinity(void) {
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(CPU_NUMBER, &set);
+atomic_bool keep_running = ATOMIC_VAR_INIT(true);
 
-    if (sched_setaffinity(0, sizeof(set), &set) == -1) {
-        perror("[Main] sched_setaffinity failed");
-        return -1;
-    }
-    return 0;
+// Empty handler to interrupt blocking syscalls (e.g., nanosleep)
+static void sigusr1_handler(int signum) { (void)signum; }
+
+static void setup_signals(void) {
+    struct sigaction sa;
+    sa.sa_handler = sigusr1_handler;
+    sa.sa_flags = 0; // No SA_RESTART: ensure blocking calls return EINTR
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, NULL);
 }
 
-void *network_thread_func(void *arg) {
-    printf("[Network] Thread started. Polling on port %d...\n", SERVER_PORT);
-
-    while (1) {
-        net_poll();
-        usleep(1000);
-    }
+static void *network_entry(void *arg) {
+    while (atomic_load(&keep_running)) net_poll();
     return NULL;
 }
 
-void *supervisor_thread_func(void *arg) {
-    // Blocks here until the system shuts down via event
+static void *supervisor_entry(void *arg) {
     supervisor_loop();
+    atomic_store(&keep_running, false);
     return NULL;
+}
+
+static void set_fifo_priority(pthread_attr_t *attr, int prio) {
+    struct sched_param param = { .sched_priority = prio };
+    pthread_attr_init(attr);
+    pthread_attr_setinheritsched(attr, PTHREAD_EXPLICIT_SCHED);
+    pthread_attr_setschedpolicy(attr, SCHED_FIFO);
+    pthread_attr_setschedparam(attr, &param);
 }
 
 int main(void) {
-    printf("[Main] =========================================\n");
-    printf("[Main] Starting Real-Time Task Supervisor System\n");
-    printf("[Main] =========================================\n");
+    setvbuf(stdout, NULL, _IONBF, 0); // Disable buffering for real-time logs
+    setup_signals();
 
-    if (set_single_core_affinity() < 0) {
-        fprintf(stderr, "[Main] CRITICAL: Failed to set CPU affinity. RTA will be invalid.\n");
-        return EXIT_FAILURE;
-    }
-    printf("[Main] CPU Affinity set to Core 0.\n");
-
-    if (net_init(SERVER_PORT) < 0) {
-        fprintf(stderr, "[Main] CRITICAL: Error initializing network on port %d\n", SERVER_PORT);
-        return EXIT_FAILURE;
+    if (geteuid() != 0) {
+        fprintf(stderr, "WARNING: Not running as root. SCHED_FIFO tasks may fail.\n");
     }
 
-    pthread_t net_thread;
-    if (pthread_create(&net_thread, NULL, network_thread_func, NULL) != 0) {
-        fprintf(stderr, "[Main] CRITICAL: Error creating network thread\n");
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(CPU_NUMBER, &cpuset);
+    if (sched_setaffinity(0, sizeof(cpuset), &cpuset) != 0) {
+        perror("[Main] Failed to set CPU affinity");
+    }
+
+    /* Initialize ALL internal subsystems before creating threads or opening sockets.
+       This prevents race conditions where the network thread accepts a client
+       before the supervisor or task lists are ready. */
+
+    supervisor_init();
+    routines_init();   // Blocking CPU calibration
+    runtime_init();
+
+    // Open network port only after internals are ready
+    if (net_init(SERVER_PORT) < 0) return EXIT_FAILURE;
+
+    pthread_t net_thread, sv_thread;
+    pthread_attr_t net_attr, sv_attr;
+
+    // Priorities: Network (99) > Supervisor (98) > Tasks (max 90)
+    set_fifo_priority(&net_attr, 99);
+    set_fifo_priority(&sv_attr, 98);
+
+    if (pthread_create(&sv_thread, &sv_attr, supervisor_entry, NULL) != 0) {
+        fprintf(stderr, "[Main] CRITICAL: Failed to create Supervisor thread\n");
         return EXIT_FAILURE;
     }
-    printf("[Main] Network thread created successfully.\n");
 
-    pthread_t sv_thread;
-    if (pthread_create(&sv_thread, NULL, supervisor_thread_func, NULL) != 0) {
-        fprintf(stderr, "[Main] CRITICAL: Error creating supervisor thread\n");
-        // Clean up network before exiting
-        pthread_cancel(net_thread);
-        pthread_join(net_thread, NULL);
-        net_cleanup();
+    if (pthread_create(&net_thread, &net_attr, network_entry, NULL) != 0) {
+        fprintf(stderr, "[Main] CRITICAL: Failed to create Network thread\n");
+        atomic_store(&keep_running, false);
+        pthread_join(sv_thread, NULL);
         return EXIT_FAILURE;
     }
-    printf("[Main] Supervisor thread created successfully.\n");
 
-    // Wait for the supervisor to complete (triggered by Shutdown event)
     pthread_join(sv_thread, NULL);
-    printf("[Main] Supervisor thread has exited.\n");
-
-    // Graceful shutdown sequence
-    printf("[Main] Stopping network thread...\n");
-    pthread_cancel(net_thread);
     pthread_join(net_thread, NULL);
 
     net_cleanup();
-
-    printf("[Main] Stopping active tasks...\n");
     runtime_cleanup();
 
-    printf("[Main] System Shutdown Complete.\n");
     return EXIT_SUCCESS;
 }

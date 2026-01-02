@@ -7,7 +7,6 @@
 #include "task_routines.h"
 #include "task_runtime.h"
 #include "net_core.h"
-#include "constants.h"
 
 typedef struct {
     Event buffer[MAX_QUEUE_SIZE];
@@ -18,209 +17,217 @@ typedef struct {
     pthread_cond_t cond;
 } EventQueue;
 
-typedef struct {
+static EventQueue queue;
+
+static struct {
     const TaskType *type;
     int instance_id;
-} ActiveTask;
+} active_set[MAX_INSTANCES];
 
-static ActiveTask active_set[MAX_INSTANCES];
 static int active_count = 0;
-static EventQueue event_queue;
+static pthread_mutex_t active_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static void queue_init(void) {
-    event_queue.head = 0;
-    event_queue.tail = 0;
-    event_queue.count = 0;
-    pthread_mutex_init(&event_queue.mutex, NULL);
-    pthread_cond_init(&event_queue.cond, NULL);
+void supervisor_init(void) {
+    queue.head = 0;
+    queue.tail = 0;
+    queue.count = 0;
+    pthread_mutex_init(&queue.mutex, NULL);
+    pthread_cond_init(&queue.cond, NULL);
+    printf("[Supervisor] Subsystem Initialized.\n");
 }
 
-void supervisor_push_event(Event ev) {
-    pthread_mutex_lock(&event_queue.mutex);
-    if (event_queue.count < MAX_QUEUE_SIZE) {
-        event_queue.buffer[event_queue.tail] = ev;
-        event_queue.tail = (event_queue.tail + 1) % MAX_QUEUE_SIZE;
-        event_queue.count++;
-        pthread_cond_signal(&event_queue.cond);
-        printf("[Supervisor] Event pushed to queue (Count: %d)\n", event_queue.count);
-    } else {
-        fprintf(stderr, "[Supervisor] Queue full, dropping event\n");
+int supervisor_push_event(Event ev) {
+    int ret = -1;
+    pthread_mutex_lock(&queue.mutex);
+    if (queue.count < MAX_QUEUE_SIZE) {
+        queue.buffer[queue.tail] = ev;
+        queue.tail = (queue.tail + 1) % MAX_QUEUE_SIZE;
+        queue.count++;
+        pthread_cond_signal(&queue.cond);
+        ret = 0;
     }
-    pthread_mutex_unlock(&event_queue.mutex);
+    pthread_mutex_unlock(&queue.mutex);
+    return ret;
 }
 
-static Event queue_pop_blocking(void) {
-    pthread_mutex_lock(&event_queue.mutex);
-    while (event_queue.count == 0) {
-        pthread_cond_wait(&event_queue.cond, &event_queue.mutex);
+static Event queue_pop(void) {
+    pthread_mutex_lock(&queue.mutex);
+    while (queue.count == 0) {
+        pthread_cond_wait(&queue.cond, &queue.mutex);
     }
-    const Event ev = event_queue.buffer[event_queue.head];
-    event_queue.head = (event_queue.head + 1) % MAX_QUEUE_SIZE;
-    event_queue.count--;
-    pthread_mutex_unlock(&event_queue.mutex);
+    Event ev = queue.buffer[queue.head];
+    queue.head = (queue.head + 1) % MAX_QUEUE_SIZE;
+    queue.count--;
+    pthread_mutex_unlock(&queue.mutex);
     return ev;
 }
 
-// Comparator for Rate Monotonic Scheduling (RMS): shorter period = higher priority
-static int compare_tasks_rm(const void *a, const void *b) {
+// --- Response Time Analysis ---
+
+static int compare_period(const void *a, const void *b) {
     const TaskType *ta = *(const TaskType **) a;
     const TaskType *tb = *(const TaskType **) b;
     return (int) (ta->period_ms - tb->period_ms);
 }
 
-/*
- * Performs Response Time Analysis (RTA) to determine if adding a new task
- * would violate any deadlines in the system.
- * It assumes Fixed-Priority Preemptive Scheduling based on Rate Monotonic priorities.
- */
-static int check_schedulability(const TaskType *candidate) {
-    printf("[RTA] Starting Analysis. Candidate: %s (C=%ld, T=%ld)\n",
-           candidate->name, candidate->wcet_ms, candidate->period_ms);
-
-    const TaskType *temp_list[MAX_INSTANCES + 1];
+static int check_rta(const TaskType *candidate) {
+    const TaskType *tasks[MAX_INSTANCES + 1];
     int count = 0;
 
-    for (int i = 0; i < active_count; i++) {
-        temp_list[count++] = active_set[i].type;
-    }
-    temp_list[count++] = candidate;
+    pthread_mutex_lock(&active_mutex);
+    for (int i = 0; i < active_count; i++) tasks[count++] = active_set[i].type;
+    pthread_mutex_unlock(&active_mutex);
+    tasks[count++] = candidate;
 
-    qsort(temp_list, count, sizeof(const TaskType *), compare_tasks_rm);
+    // 1. Utilization Test (Necessary Condition)
+    double util = 0;
+    for (int i = 0; i < count; i++) {
+        util += (double)tasks[i]->wcet_ms / (double)tasks[i]->period_ms;
+    }
+    if (util > 1.0) {
+        printf("[RTA] Rejected %s: Utilization %.2f > 1.0\n", candidate->name, util);
+        return 0;
+    }
+
+    // 2. Response Time Analysis (Sufficient Condition)
+    qsort(tasks, count, sizeof(const TaskType *), compare_period);
 
     for (int i = 0; i < count; i++) {
-        const TaskType *tau_i = temp_list[i];
-        double R = (double) tau_i->wcet_ms;
+        double R = (double)tasks[i]->wcet_ms;
+        double R_new = R;
+        int converged = 0;
 
-        // Iteratively calculate response time including interference from higher priority tasks
-        while (1) {
-            double interference = 0;
+        for (int k = 0; k < 100; k++) {
+            double I = 0;
             for (int j = 0; j < i; j++) {
-                const TaskType *tau_j = temp_list[j];
-                interference += ceil(R / (double) tau_j->period_ms) * (double) tau_j->wcet_ms;
+                I += ceil(R / (double)tasks[j]->period_ms) * (double)tasks[j]->wcet_ms;
             }
+            R_new = (double)tasks[i]->wcet_ms + I;
 
-            const double R_new = (double) tau_i->wcet_ms + interference;
-
-            if (R_new > (double) tau_i->deadline_ms) {
-                printf("[RTA] FAILED. Task %s R=%.1f > D=%ld\n", tau_i->name, R_new, tau_i->deadline_ms);
+            if (R_new > (double)tasks[i]->deadline_ms) {
+                printf("[RTA] Rejected %s: R=%.1f > D=%ld\n", candidate->name, R_new, tasks[i]->deadline_ms);
                 return 0;
             }
-            if (R_new == R) break;
+            if (R_new == R) {
+                converged = 1;
+                break;
+            }
             R = R_new;
         }
-        printf("[RTA] Task %s Feasible (R=%.1f <= D=%ld)\n", tau_i->name, R, tau_i->deadline_ms);
+        if (!converged) return 0;
     }
     return 1;
 }
 
 static void handle_activate(Event ev) {
-    printf("[Supervisor] Processing ACTIVATE '%s'\n", ev.payload.task_name);
-    char response[64];
-
+    char resp[64];
     const TaskType *task = routines_get_by_name(ev.payload.task_name);
+
     if (!task) {
-        printf("[Supervisor] Task '%s' not found in catalog\n", ev.payload.task_name);
-        snprintf(response, sizeof(response), "ERR Unknown Task\n");
-        net_send_response(ev.client_fd, response);
+        net_send_response(ev.client_fd, "ERR Unknown Task\n");
         return;
     }
 
-    if (!check_schedulability(task)) {
-        printf("[Supervisor] Schedulability check rejected '%s'\n", task->name);
-        snprintf(response, sizeof(response), "ERR Schedulability\n");
-        net_send_response(ev.client_fd, response);
+    if (!check_rta(task)) {
+        net_send_response(ev.client_fd, "ERR Schedulability\n");
         return;
     }
 
-    const int id = runtime_create_instance(task);
+    // Pre-check capacity to avoid unnecessary thread spawning
+    pthread_mutex_lock(&active_mutex);
+    if (active_count >= MAX_INSTANCES) {
+        pthread_mutex_unlock(&active_mutex);
+        net_send_response(ev.client_fd, "ERR System Full\n");
+        return;
+    }
+    pthread_mutex_unlock(&active_mutex);
+
+    int id = runtime_create_instance(task);
     if (id < 0) {
-        snprintf(response, sizeof(response), "ERR System Full\n");
-    } else {
+        net_send_response(ev.client_fd, "ERR System Full\n");
+        return;
+    }
+
+    pthread_mutex_lock(&active_mutex);
+    if (active_count < MAX_INSTANCES) {
         active_set[active_count].type = task;
         active_set[active_count].instance_id = id;
         active_count++;
-        snprintf(response, sizeof(response), "OK ID=%d\n", id);
-        printf("[Supervisor] Activation Success. Active Tasks: %d\n", active_count);
+        snprintf(resp, sizeof(resp), "OK ID=%d\n", id);
+        printf("[Supervisor] Activated task '%s' as ID %d (Total: %d)\n", task->name, id, active_count);
+    } else {
+        // Safe fallback in case of race condition
+        runtime_stop_instance(id);
+        snprintf(resp, sizeof(resp), "ERR System Full\n");
     }
-    net_send_response(ev.client_fd, response);
+    pthread_mutex_unlock(&active_mutex);
+
+    net_send_response(ev.client_fd, resp);
 }
 
-static void handle_deactivate(const Event ev) {
-    printf("[Supervisor] Processing DEACTIVATE ID %ld\n", ev.payload.target_id);
-    char response[64];
-    const int id = (int) ev.payload.target_id;
-
+static void handle_deactivate(Event ev) {
+    int id = (int) ev.payload.target_id;
     if (runtime_stop_instance(id) == 0) {
-        int found_idx = -1;
+        pthread_mutex_lock(&active_mutex);
+        int idx = -1;
         for (int i = 0; i < active_count; i++) {
             if (active_set[i].instance_id == id) {
-                found_idx = i;
+                idx = i;
                 break;
             }
         }
-
-        if (found_idx != -1) {
-            // Compact the active set array
-            for (int i = found_idx; i < active_count - 1; i++) {
-                active_set[i] = active_set[i + 1];
-            }
+        if (idx != -1) {
+            for (int i = idx; i < active_count - 1; i++) active_set[i] = active_set[i + 1];
             active_count--;
         }
-        snprintf(response, sizeof(response), "OK\n");
+        pthread_mutex_unlock(&active_mutex);
+
+        net_send_response(ev.client_fd, "OK\n");
+        printf("[Supervisor] Deactivated task ID %d\n", id);
     } else {
-        snprintf(response, sizeof(response), "ERR Invalid ID\n");
+        net_send_response(ev.client_fd, "ERR Invalid ID\n");
     }
-    net_send_response(ev.client_fd, response);
 }
 
-static void handle_list(const Event ev) {
-    // Large buffer to hold the multiline string. NET_RESPONSE_BUF_SIZE is 4096.
-    char response[NET_RESPONSE_BUF_SIZE - 64];
-    int offset = 0;
-
-    offset += snprintf(response + offset, sizeof(response) - offset, "Active Count: %d\n", active_count);
-
-    if (active_count == 0) {
-        offset += snprintf(response + offset, sizeof(response) - offset, "  (No active tasks)\n");
-    } else {
-        for (int i = 0; i < active_count; i++) {
-            // Prevent buffer overflow
-            if (sizeof(response) - offset < 100) {
-                offset += snprintf(response + offset, sizeof(response) - offset, "  ... (list truncated)\n");
-                break;
-            }
-            offset += snprintf(response + offset, sizeof(response) - offset,
-                               "  [ID %d] Name: %s | C: %ld | T: %ld | D: %ld\n",
-                               active_set[i].instance_id,
-                               active_set[i].type->name,
-                               active_set[i].type->wcet_ms,
-                               active_set[i].type->period_ms,
-                               active_set[i].type->deadline_ms
-            );
-        }
+static void handle_list(Event ev) {
+    char resp[NET_RESPONSE_BUF_SIZE];
+    int off = 0;
+    pthread_mutex_lock(&active_mutex);
+    off += snprintf(resp + off, sizeof(resp) - off, "Running: %d\n", active_count);
+    for (int i = 0; i < active_count; i++) {
+        if (sizeof(resp) - off < 100) break;
+        off += snprintf(resp + off, sizeof(resp) - off, "  [ID %d] %s (C=%ld, T=%ld)\n",
+                        active_set[i].instance_id, active_set[i].type->name,
+                        active_set[i].type->wcet_ms, active_set[i].type->period_ms);
     }
+    pthread_mutex_unlock(&active_mutex);
+    net_send_response(ev.client_fd, resp);
+}
 
-    net_send_response(ev.client_fd, response);
+static void handle_info(Event ev) {
+    char resp[NET_RESPONSE_BUF_SIZE];
+    int count, off = 0;
+    const TaskType *cat = routines_get_all(&count);
+    off += snprintf(resp + off, sizeof(resp) - off, "Capacity: %d/%d active\nTasks:\n", active_count, MAX_INSTANCES);
+    for (int i = 0; i < count; i++) {
+        off += snprintf(resp + off, sizeof(resp) - off, "  %s: C=%ld T=%ld D=%ld\n",
+                        cat[i].name, cat[i].wcet_ms, cat[i].period_ms, cat[i].deadline_ms);
+    }
+    net_send_response(ev.client_fd, resp);
 }
 
 void supervisor_loop(void) {
-    queue_init();
-    routines_init();
-    runtime_init();
-
     printf("[Supervisor] Event Loop Started.\n");
-
     while (1) {
-        const Event ev = queue_pop_blocking();
+        Event ev = queue_pop();
         switch (ev.type) {
-            case EV_ACTIVATE: handle_activate(ev);
-                break;
-            case EV_DEACTIVATE: handle_deactivate(ev);
-                break;
+            case EV_ACTIVATE: handle_activate(ev); break;
+            case EV_DEACTIVATE: handle_deactivate(ev); break;
+            case EV_LIST: handle_list(ev); break;
+            case EV_INFO: handle_info(ev); break;
             case EV_SHUTDOWN:
                 printf("[Supervisor] Shutdown signal received.\n");
                 return;
-            case EV_LIST: handle_list(ev);
             default: break;
         }
     }

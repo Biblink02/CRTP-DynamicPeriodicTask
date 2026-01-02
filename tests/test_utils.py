@@ -5,164 +5,99 @@ import sys
 import os
 import shutil
 
-# Configuration
 SERVER_EXE = "./dynamic_periodic_task"
 PORT = 8080
 HOST = "127.0.0.1"
 
+def log(msg):
+    print(f"[TEST-DEBUG] {msg}", flush=True)
+
 def get_server_command():
-    """
-    Constructs the execution command.
-    Wraps the executable with Valgrind if available to detect memory leaks
-    and invalid memory accesses during testing.
-    """
     if not os.path.exists(SERVER_EXE):
-        print(f"Error: Executable {SERVER_EXE} not found.")
+        log(f"Error: Executable {SERVER_EXE} not found.")
         sys.exit(1)
 
-    valgrind_path = shutil.which("valgrind")
-
-    if valgrind_path:
-        print(f"[test_utils] Valgrind detected. Running with memory checks.")
+    valgrind = shutil.which("valgrind")
+    if valgrind:
+        # Full memory checks enabled
+        log("Valgrind detected: Running with memory checks (this will be slow).")
         return [
-            valgrind_path,
+            valgrind,
             "--leak-check=full",
             "--show-leak-kinds=all",
             "--track-origins=yes",
-            "--error-exitcode=1",  # Forces failure on memory errors
+            "--error-exitcode=1",
             SERVER_EXE
         ]
-    else:
-        print(f"[test_utils] Valgrind not found. Running natively.")
-        return [SERVER_EXE]
+    return [SERVER_EXE]
 
 def wait_for_server(timeout=5.0):
-    """
-    Polls the target port until the server is ready to accept connections.
-    This prevents race conditions where tests attempt to connect before
-    the server has finished its initialization (e.g., CPU calibration).
-    """
-    start_time = time.time()
-    while time.time() - start_time < timeout:
+    start = time.time()
+    while time.time() - start < timeout:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.1)
+            sock.settimeout(0.5)
             sock.connect((HOST, PORT))
             sock.close()
             return True
-        except (ConnectionRefusedError, socket.timeout, OSError):
+        except:
             time.sleep(0.1)
     return False
 
 def send_command(sock, cmd):
-    """
-    Helper function to send a command line and retrieve the trimmed response.
-    """
     try:
+        log(f"Sending: {cmd}")
         sock.sendall(f"{cmd}\n".encode())
-        data = sock.recv(1024).decode().strip()
-        return data
-    except (BrokenPipeError, ConnectionResetError):
-        return ""
-
-def stop_server_gracefully(proc):
-    """
-    Initiates a graceful shutdown to allow the server to clean up resources
-    (join threads, close sockets). Falls back to SIGTERM/SIGKILL if unresponsive.
-    """
-    if not proc: return
-
-    stopped_gracefully = False
-
-    # Attempt 1: Send 'SHUTDOWN' command via TCP
-    if proc.poll() is None:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1.0)
-            sock.connect((HOST, PORT))
-            sock.sendall(b"SHUTDOWN\n")
-
-            # Consume potential response to ensure processing
-            try:
-                _ = sock.recv(1024)
-            except:
-                pass
-
-            sock.close()
-
-            # Wait for the process to exit voluntarily
-            try:
-                proc.wait(timeout=2.0)
-                stopped_gracefully = True
-            except subprocess.TimeoutExpired:
-                pass
-        except Exception:
-            # Network might be unreachable or server crashed
-            pass
-
-    # Attempt 2: Force Kill (SIGTERM -> SIGKILL)
-    if proc.poll() is None:
-        if not stopped_gracefully:
-            pass # Logging suppressed for cleaner output
-
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        resp = sock.recv(1024).decode().strip()
+        log(f"Received: {resp}")
+        return resp
+    except Exception as e:
+        log(f"Socket Error during send/recv: {e}")
+        return f"ERR {e}"
 
 def run_test_isolated(test_func):
-    """
-    Test runner wrapper.
-    Ensures a fresh server instance for each test case to prevent
-    state contamination between tests.
-    """
+    log(f"Starting Server for {test_func.__name__}...")
+
     cmd = get_server_command()
     is_valgrind = "valgrind" in cmd[0]
 
-    proc = None
-    logic_passed = False
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Valgrind starts much slower
+    startup_timeout = 20.0 if is_valgrind else 5.0
+    if not wait_for_server(startup_timeout):
+        log("FAIL: Server startup timed out (Port not open)")
+        proc.terminate()
+        return False
+
+    # CRITICAL: Wait for CPU Calibration to finish
+    # Without Valgrind: 1s is enough. With Valgrind: need 5s+.
+    wait_time = 5.0 if is_valgrind else 1.0
+    log(f"Waiting {wait_time}s for Server Calibration (Valgrind={is_valgrind})...")
+    time.sleep(wait_time)
+
+    log(f"=== RUNNING: {test_func.__name__} ===")
 
     try:
-        # Start Server
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        # Wait for the server to bind the port
-        if not wait_for_server(timeout=10.0 if is_valgrind else 3.0):
-            print(f"FAIL: Server startup timed out (Valgrind: {is_valgrind})")
-            return False
-
-        # Early crash detection
-        if proc.poll() is not None:
-            print(f"FAIL: Server died immediately (Exit code: {proc.returncode})")
-            return False
-
-        # Execute the test logic
-        print(f"\n=== RUNNING: {test_func.__name__} ===")
-        logic_passed = test_func()
-
-        # Late crash detection
-        if proc.poll() is not None:
-            print(f"FAIL: Server crashed during test (Exit code: {proc.returncode})")
-            return False
-
+        result = test_func()
     except Exception as e:
-        print(f"CRASH/EXCEPT wrapper: {e}")
-        return False
+        log(f"EXCEPTION in test wrapper: {e}")
+        result = False
 
-    finally:
-        valgrind_error = False
-        if proc:
-            stop_server_gracefully(proc)
+    log(f"Stopping Server...")
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except:
+        proc.kill()
 
-            # Check Valgrind exit code (1 indicates memory errors)
-            if is_valgrind and proc.returncode == 1:
-                print(f"FAIL: Valgrind detected Memory Leaks/Errors!")
-                valgrind_error = True
+    # Check for memory leaks if Valgrind was used
+    if result and is_valgrind and proc.returncode == 1:
+        log(f"FAIL: Logic passed, but Valgrind found MEMORY ERRORS!")
+        result = False
 
-    if logic_passed and not valgrind_error:
-        print(f"PASS: {test_func.__name__}")
-        return True
+    if result:
+        log(f"PASS: {test_func.__name__}")
     else:
-        print(f"FAIL: {test_func.__name__}")
-        return False
+        log(f"FAIL: {test_func.__name__}")
+    return result

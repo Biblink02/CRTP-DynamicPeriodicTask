@@ -1,5 +1,6 @@
 #ifndef TASK_H
 #define TASK_H
+
 #include <stdbool.h>
 #include <pthread.h>
 #include "constants.h"
@@ -20,4 +21,5 @@ typedef struct {
     volatile bool stop;
     bool active;
 } TaskInstance;
-#endif //TASK_H
+
+#endif
