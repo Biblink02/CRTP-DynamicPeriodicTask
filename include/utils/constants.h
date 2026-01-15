@@ -2,7 +2,7 @@
 #define CONSTANTS_H
 
 #define SERVER_PORT 8080
-#define CPU_NUMBER 0
+#define CPU_NUMBER 1
 
 #define MAX_CLIENTS 25
 #define BACKLOG_SIZE 5

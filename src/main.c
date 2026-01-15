@@ -16,7 +16,7 @@
 atomic_bool keep_running = ATOMIC_VAR_INIT(true);
 
 // Empty handler to interrupt blocking syscalls (e.g., nanosleep)
-static void sigusr1_handler(int signum) { (void) signum; }
+static void sigusr1_handler(const int signum) { (void) signum; }
 
 static void setup_signals(void) {
     struct sigaction sa;
@@ -37,8 +37,8 @@ static void *supervisor_entry(void *arg) {
     return NULL;
 }
 
-static void set_fifo_priority(pthread_attr_t *attr, int prio) {
-    struct sched_param param = {.sched_priority = prio};
+static void set_fifo_priority(pthread_attr_t *attr, const int prio) {
+    const struct sched_param param = {.sched_priority = prio};
     pthread_attr_init(attr);
     pthread_attr_setinheritsched(attr, PTHREAD_EXPLICIT_SCHED);
     pthread_attr_setschedpolicy(attr, SCHED_FIFO);
@@ -65,7 +65,7 @@ int main(void) {
        before the supervisor or task lists are ready. */
 
     supervisor_init();
-    routines_init(); // Blocking CPU calibration
+    routines_init();
     runtime_init();
 
     // Open network port only after internals are ready

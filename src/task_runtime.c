@@ -13,15 +13,15 @@ static TaskInstance pool[MAX_INSTANCES];
 static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int id_counter = 1;
 
-static long long diff_ns(struct timespec t1, struct timespec t2) {
+static long long diff_ns(const struct timespec t1, const struct timespec t2) {
     return (long long) (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
 }
 
 static void *thread_entry(void *arg) {
-    TaskInstance *inst = (TaskInstance *) arg;
+    const TaskInstance *inst = (TaskInstance *) arg;
     struct timespec next_activation, start, end;
-    long long period_ns = inst->type->period_ms * 1000000LL;
-    long long deadline_ns = inst->type->deadline_ms * 1000000LL;
+    const long long period_ns = inst->type->period_ms * 1000000LL;
+    const long long deadline_ns = inst->type->deadline_ms * 1000000LL;
 
     // Anchor: Absolute time for first activation
     clock_gettime(CLOCK_MONOTONIC, &next_activation);
@@ -35,11 +35,11 @@ static void *thread_entry(void *arg) {
         clock_gettime(CLOCK_MONOTONIC, &end);
 
         // Check Deadline
-        long long exec_time = diff_ns(start, end);
+        const long long exec_time = diff_ns(start, end);
         if (exec_time > deadline_ns) {
             printf("[Runtime] DEADLINE MISS: Task %s (ID %d) | Exec: %.2f ms > Limit: %ld ms\n",
-                   inst->type->name, inst->id,
-                   exec_time / 1000000.0, inst->type->deadline_ms);
+                   inst->type->name,
+                   inst->id, exec_time / 1000000.0, inst->type->deadline_ms);
         }
 
         // Calculate next absolute wake-up time (t_{k+1} = t_k + T)
@@ -114,12 +114,12 @@ int runtime_create_instance(const TaskType *type) {
     }
 
     pthread_attr_destroy(&attr);
-    int id = inst->id;
+    const int id = inst->id;
     pthread_mutex_unlock(&pool_mutex);
     return id;
 }
 
-int runtime_stop_instance(int id) {
+int runtime_stop_instance(const int id) {
     pthread_mutex_lock(&pool_mutex);
     int idx = -1;
     for (int i = 0; i < MAX_INSTANCES; i++) {

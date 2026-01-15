@@ -74,12 +74,12 @@ static void handle_line(int fd, char *line) {
 }
 
 void net_poll(void) {
-    int ret = poll(poll_fds, MAX_CLIENTS + 1, 100);
+    const int ret = poll(poll_fds, MAX_CLIENTS + 1, 100);
     if (ret <= 0) return;
 
     // Accept new connections
     if (poll_fds[0].revents & POLLIN) {
-        int new_sock = accept(poll_fds[0].fd, NULL, NULL);
+        const int new_sock = accept(poll_fds[0].fd, NULL, NULL);
         if (new_sock >= 0) {
             fcntl(new_sock, F_SETFL, fcntl(new_sock, F_GETFL, 0) | O_NONBLOCK);
             int added = 0;
@@ -106,7 +106,7 @@ void net_poll(void) {
 
         if (poll_fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
             char temp_buf[NET_BUFFER_SIZE];
-            ssize_t n = recv(poll_fds[i].fd, temp_buf, sizeof(temp_buf), 0);
+            const ssize_t n = recv(poll_fds[i].fd, temp_buf, sizeof(temp_buf), 0);
 
             if (n > 0) {
                 // Buffer Overflow Protection
@@ -125,7 +125,7 @@ void net_poll(void) {
                     }
 
                     // Move remaining partial data to start of buffer
-                    long remaining = client_buf_lens[i] - (line_start - client_buffers[i]);
+                    const long remaining = client_buf_lens[i] - (line_start - client_buffers[i]);
                     if (remaining > 0) memmove(client_buffers[i], line_start, remaining);
                     client_buf_lens[i] = (int) remaining;
                 } else {
