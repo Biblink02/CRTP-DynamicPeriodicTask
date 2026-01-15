@@ -36,7 +36,7 @@ void supervisor_init(void) {
     printf("[Supervisor] Subsystem Initialized.\n");
 }
 
-int supervisor_push_event(Event ev) {
+int supervisor_push_event(const Event ev) {
     int ret = -1;
     pthread_mutex_lock(&queue.mutex);
     if (queue.count < MAX_QUEUE_SIZE) {
@@ -52,10 +52,10 @@ int supervisor_push_event(Event ev) {
 
 static Event queue_pop(void) {
     pthread_mutex_lock(&queue.mutex);
-    while (queue.count == 0) {
+    while (queue.count <= 0) {
         pthread_cond_wait(&queue.cond, &queue.mutex);
     }
-    Event ev = queue.buffer[queue.head];
+    const Event ev = queue.buffer[queue.head];
     queue.head = (queue.head + 1) % MAX_QUEUE_SIZE;
     queue.count--;
     pthread_mutex_unlock(&queue.mutex);
@@ -119,7 +119,7 @@ static int check_rta(const TaskType *candidate) {
     return 1;
 }
 
-static void handle_activate(Event ev) {
+static void handle_activate(const Event ev) {
     char resp[64];
     const TaskType *task = routines_get_by_name(ev.payload.task_name);
 
@@ -142,7 +142,7 @@ static void handle_activate(Event ev) {
     }
     pthread_mutex_unlock(&active_mutex);
 
-    int id = runtime_create_instance(task);
+    const int id = runtime_create_instance(task);
     if (id < 0) {
         net_send_response(ev.client_fd, "ERR System Full\n");
         return;
@@ -165,8 +165,8 @@ static void handle_activate(Event ev) {
     net_send_response(ev.client_fd, resp);
 }
 
-static void handle_deactivate(Event ev) {
-    int id = (int) ev.payload.target_id;
+static void handle_deactivate(const Event ev) {
+    const int id = (int) ev.payload.target_id;
     if (runtime_stop_instance(id) == 0) {
         pthread_mutex_lock(&active_mutex);
         int idx = -1;
@@ -189,7 +189,7 @@ static void handle_deactivate(Event ev) {
     }
 }
 
-static void handle_list(Event ev) {
+static void handle_list(const Event ev) {
     char resp[NET_RESPONSE_BUF_SIZE];
     int off = 0;
     pthread_mutex_lock(&active_mutex);
@@ -204,7 +204,7 @@ static void handle_list(Event ev) {
     net_send_response(ev.client_fd, resp);
 }
 
-static void handle_info(Event ev) {
+static void handle_info(const Event ev) {
     char resp[NET_RESPONSE_BUF_SIZE];
     int count, off = 0;
     const TaskType *cat = routines_get_all(&count);
@@ -219,7 +219,7 @@ static void handle_info(Event ev) {
 void supervisor_loop(void) {
     printf("[Supervisor] Event Loop Started.\n");
     while (1) {
-        Event ev = queue_pop();
+        const Event ev = queue_pop();
         switch (ev.type) {
             case EV_ACTIVATE: handle_activate(ev);
                 break;
