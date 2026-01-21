@@ -5,10 +5,13 @@
 #include <stdarg.h>
 #include <pthread.h>
 #include <stdatomic.h>
-#include <unistd.h>
-#include "logger.h"
 #include <stdbool.h>
+#include "logger.h"
 #include "constants.h"
+
+#ifndef LOGGER_USE_TRYLOCK
+#define LOGGER_USE_TRYLOCK 1
+#endif
 
 typedef struct {
     char buffer[LOGGER_BUFFER_SIZE];
@@ -18,18 +21,34 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
     atomic_bool keep_running;
-    atomic_size_t dropped_logs;
+    atomic_size_t dropped_overflow;
+    atomic_size_t dropped_busy;
+    atomic_size_t truncated_msgs;
 } LoggerContext;
 
 static LoggerContext ctx;
 
+static inline void ring_write_bytes(const char *src, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        ctx.buffer[ctx.head] = src[i];
+        ctx.head = (ctx.head + 1) % LOGGER_BUFFER_SIZE;
+    }
+    ctx.count += n;
+}
+
 int logger_init(void) {
     memset(&ctx, 0, sizeof(LoggerContext));
-    atomic_store(&ctx.keep_running, true);
-    atomic_store(&ctx.dropped_logs, 0);
+    atomic_init(&ctx.keep_running, true);
+    atomic_init(&ctx.dropped_overflow, 0);
+    atomic_init(&ctx.dropped_busy, 0);
+    atomic_init(&ctx.truncated_msgs, 0);
 
     if (pthread_mutex_init(&ctx.mutex, NULL) != 0) return -1;
-    if (pthread_cond_init(&ctx.cond, NULL) != 0) return -1;
+    if (pthread_cond_init(&ctx.cond, NULL) != 0) {
+        pthread_mutex_destroy(&ctx.mutex);
+        return -1;
+    }
+
     printf("[Logger] Subsystem Initialized (Buffer: %d bytes).\n", LOGGER_BUFFER_SIZE);
     return 0;
 }
@@ -38,30 +57,41 @@ void *logger_thread_entry(void *arg) {
     (void)arg;
     char local_buf[MAX_LOG_MSG_LEN];
 
-    while (atomic_load(&ctx.keep_running) || ctx.count > 0) {
+    while (true) {
         pthread_mutex_lock(&ctx.mutex);
 
-        while (ctx.count == 0 && atomic_load(&ctx.keep_running)) {
+        while (ctx.count == 0 && atomic_load_explicit(&ctx.keep_running, memory_order_relaxed)) {
             pthread_cond_wait(&ctx.cond, &ctx.mutex);
         }
 
-        if (ctx.count == 0 && !atomic_load(&ctx.keep_running)) {
+        if (ctx.count == 0 && !atomic_load_explicit(&ctx.keep_running, memory_order_relaxed)) {
             pthread_mutex_unlock(&ctx.mutex);
             break;
         }
 
         size_t idx = 0;
-        while (idx < MAX_LOG_MSG_LEN - 1 && ctx.count > 0) {
-            char c = ctx.buffer[ctx.tail];
+        bool truncated = false;
+
+        while (ctx.count > 0) {
+            const char c = ctx.buffer[ctx.tail];
             ctx.tail = (ctx.tail + 1) % LOGGER_BUFFER_SIZE;
             ctx.count--;
 
-            local_buf[idx++] = c;
+            if (idx < MAX_LOG_MSG_LEN - 1) {
+                local_buf[idx++] = c;
+            } else {
+                truncated = true;
+            }
+
             if (c == '\0') break;
         }
-        local_buf[idx] = '\0';
 
+        local_buf[idx] = '\0';
         pthread_mutex_unlock(&ctx.mutex);
+
+        if (truncated) {
+            atomic_fetch_add_explicit(&ctx.truncated_msgs, 1, memory_order_relaxed);
+        }
 
         fputs(local_buf, stdout);
     }
@@ -69,54 +99,74 @@ void *logger_thread_entry(void *arg) {
 }
 
 void rt_log(const char *fmt, ...) {
-    if (!atomic_load(&ctx.keep_running)) return;
+    if (!atomic_load_explicit(&ctx.keep_running, memory_order_relaxed)) return;
 
-    char temp_buf[MAX_LOG_MSG_LEN];
-    va_list args;
-
-    va_start(args, fmt);
-    int len = vsnprintf(temp_buf, sizeof(temp_buf), fmt, args);
-    va_end(args);
-
-    if (len < 0) return;
-
-    size_t write_len = (size_t)len + 1;
-
+#if LOGGER_USE_TRYLOCK
+    if (pthread_mutex_trylock(&ctx.mutex) != 0) {
+        atomic_fetch_add_explicit(&ctx.dropped_busy, 1, memory_order_relaxed);
+        return;
+    }
+#else
     pthread_mutex_lock(&ctx.mutex);
+#endif
 
-    size_t capacity = LOGGER_BUFFER_SIZE;
-    size_t free_space = capacity - ctx.count;
-
-    if (write_len > free_space) {
-        atomic_fetch_add(&ctx.dropped_logs, 1);
+    if (!atomic_load_explicit(&ctx.keep_running, memory_order_relaxed)) {
         pthread_mutex_unlock(&ctx.mutex);
         return;
     }
 
-    for (size_t i = 0; i < write_len; i++) {
-        ctx.buffer[ctx.head] = temp_buf[i];
-        ctx.head = (ctx.head + 1) % LOGGER_BUFFER_SIZE;
+    char temp_buf[MAX_LOG_MSG_LEN];
+    va_list args;
+    va_start(args, fmt);
+    const int len = vsnprintf(temp_buf, sizeof(temp_buf), fmt, args);
+    va_end(args);
+
+    if (len < 0) {
+        pthread_mutex_unlock(&ctx.mutex);
+        return;
     }
 
-    ctx.count += write_len;
-    pthread_cond_signal(&ctx.cond);
+    size_t write_len;
+    if ((size_t)len >= sizeof(temp_buf)) {
+        temp_buf[MAX_LOG_MSG_LEN - 1] = '\0';
+        write_len = sizeof(temp_buf);
+        atomic_fetch_add_explicit(&ctx.truncated_msgs, 1, memory_order_relaxed);
+    } else {
+        write_len = (size_t)len + 1;
+    }
+
+    const size_t free_space = LOGGER_BUFFER_SIZE - ctx.count;
+    if (write_len > free_space) {
+        atomic_fetch_add_explicit(&ctx.dropped_overflow, 1, memory_order_relaxed);
+        pthread_mutex_unlock(&ctx.mutex);
+        return;
+    }
+
+    const bool was_empty = (ctx.count == 0);
+    ring_write_bytes(temp_buf, write_len);
+
+    if (was_empty) pthread_cond_signal(&ctx.cond);
+
     pthread_mutex_unlock(&ctx.mutex);
 }
 
-void logger_cleanup(void) {
-    atomic_store(&ctx.keep_running, false);
-
+void logger_request_stop(void) {
+    atomic_store_explicit(&ctx.keep_running, false, memory_order_relaxed);
     pthread_mutex_lock(&ctx.mutex);
-    pthread_cond_signal(&ctx.cond);
+    pthread_cond_broadcast(&ctx.cond);
     pthread_mutex_unlock(&ctx.mutex);
+}
 
-    // Main joins the thread, we just report stats here
+void logger_destroy(void) {
+    const size_t d_over = atomic_load_explicit(&ctx.dropped_overflow, memory_order_relaxed);
+    const size_t d_busy = atomic_load_explicit(&ctx.dropped_busy, memory_order_relaxed);
+    const size_t trunc = atomic_load_explicit(&ctx.truncated_msgs, memory_order_relaxed);
 
-    size_t dropped = atomic_load(&ctx.dropped_logs);
-    if (dropped > 0) {
-        fprintf(stderr, "[Logger] Warning: %zu messages dropped.\n", dropped);
-    }
+    if (d_over) fprintf(stderr, "[Logger] Dropped (overflow): %zu\n", d_over);
+    if (d_busy) fprintf(stderr, "[Logger] Dropped (mutex busy): %zu\n", d_busy);
+    if (trunc) fprintf(stderr, "[Logger] Truncated: %zu\n", trunc);
 
     pthread_mutex_destroy(&ctx.mutex);
     pthread_cond_destroy(&ctx.cond);
+    printf("[Logger] Subsystem Destroyed.\n");
 }

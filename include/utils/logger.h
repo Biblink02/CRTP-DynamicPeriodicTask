@@ -1,6 +1,7 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
+
 /**
  * Initializes the mutexes, condition variables and buffers.
  * Does NOT spawn the thread.
@@ -17,20 +18,19 @@ void *logger_thread_entry(void *arg);
 
 /**
  * Non-blocking, thread-safe logging function for Real-Time tasks.
- *
- * It formats the string and copies it into a shared ring buffer.
- * If the buffer is full, the message is dropped to prevent priority inversion
- * or blocking the calling real-time task.
- *
- * @param fmt Format string (standard printf syntax).
- * @param ... Variable arguments.
  */
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /**
- * Signals the logger thread to stop and releases resources.
- * Ensures remaining messages in the buffer are flushed before shutdown.
+ * Signals the logger thread to stop processing new messages (after draining).
+ * This must be called BEFORE joining the logger thread.
  */
-void logger_cleanup(void);
+void logger_request_stop(void);
+
+/**
+ * Destroys mutexes and condition variables.
+ * This must be called AFTER joining the logger thread.
+ */
+void logger_destroy(void);
 
 #endif // LOGGER_H

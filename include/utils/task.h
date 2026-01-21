@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 #include <pthread.h>
+#include <stdatomic.h>
+
 #include "constants.h"
 
 typedef struct {
@@ -18,7 +20,7 @@ typedef struct {
     int id;
     pthread_t thread;
     const TaskType *type;
-    volatile bool stop;
+    atomic_bool stop;
     bool active;
 } TaskInstance;
 

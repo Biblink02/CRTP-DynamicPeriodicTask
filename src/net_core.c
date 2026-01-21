@@ -104,42 +104,53 @@ void net_poll(void) {
     // Handle data from clients
     for (int i = 1; i <= MAX_CLIENTS; i++) {
         if (poll_fds[i].fd == -1) continue;
+        if (!(poll_fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
 
-        if (poll_fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
-            char temp_buf[NET_BUFFER_SIZE];
-            const ssize_t n = recv(poll_fds[i].fd, temp_buf, sizeof(temp_buf), 0);
+        char temp_buf[NET_BUFFER_SIZE];
+        const ssize_t n = recv(poll_fds[i].fd, temp_buf, sizeof(temp_buf), 0);
 
-            if (n > 0) {
-                // Buffer Overflow Protection
-                if (client_buf_lens[i] + n < NET_BUFFER_SIZE) {
-                    memcpy(client_buffers[i] + client_buf_lens[i], temp_buf, n);
-                    client_buf_lens[i] += n;
-                    client_buffers[i][client_buf_lens[i]] = '\0';
+        if (n > 0) {
+            // Buffer Overflow Protection
+            if (client_buf_lens[i] + n < NET_BUFFER_SIZE) {
+                memcpy(client_buffers[i] + client_buf_lens[i], temp_buf, n);
+                client_buf_lens[i] += (int) n;
+                client_buffers[i][client_buf_lens[i]] = '\0';
 
-                    // Process all complete lines (TCP fragmentation handling)
-                    char *line_start = client_buffers[i];
-                    char *newline_ptr;
-                    while ((newline_ptr = strchr(line_start, '\n')) != NULL) {
-                        *newline_ptr = '\0';
-                        handle_line(poll_fds[i].fd, line_start);
-                        line_start = newline_ptr + 1;
-                    }
-
-                    // Move remaining partial data to start of buffer
-                    const long remaining = client_buf_lens[i] - (line_start - client_buffers[i]);
-                    if (remaining > 0) memmove(client_buffers[i], line_start, remaining);
-                    client_buf_lens[i] = (int) remaining;
-                } else {
-                    client_buf_lens[i] = 0; // Reset buffer on overflow
-                    net_send_response(poll_fds[i].fd, "ERR Buffer Overflow\n");
-                    rt_log("[Net] Buffer overflow on FD %d. Dropped data.\n", poll_fds[i].fd);
+                // Process all complete lines (TCP fragmentation handling)
+                char *line_start = client_buffers[i];
+                char *newline_ptr;
+                while ((newline_ptr = strchr(line_start, '\n')) != NULL) {
+                    *newline_ptr = '\0';
+                    handle_line(poll_fds[i].fd, line_start);
+                    line_start = newline_ptr + 1;
                 }
+
+                // Move remaining partial data to start of buffer
+                const long remaining = client_buf_lens[i] - (line_start - client_buffers[i]);
+                if (remaining > 0) memmove(client_buffers[i], line_start, remaining);
+                client_buf_lens[i] = (int) remaining;
             } else {
-                rt_log("[Net] Client FD %d disconnected\n", poll_fds[i].fd);
-                close(poll_fds[i].fd);
-                poll_fds[i].fd = -1;
-                client_buf_lens[i] = 0;
+                client_buf_lens[i] = 0; // Reset buffer on overflow
+                net_send_response(poll_fds[i].fd, "ERR Buffer Overflow\n");
+                rt_log("[Net] Buffer overflow on FD %d. Dropped data.\n", poll_fds[i].fd);
             }
+        } else if (n == 0) {
+            rt_log("[Net] Client FD %d disconnected\n", poll_fds[i].fd);
+            close(poll_fds[i].fd);
+            poll_fds[i].fd = -1;
+            client_buf_lens[i] = 0;
+        } else {
+            // n < 0
+
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                // Non-blocking: no data right now (or interrupted). Not a disconnect.
+                continue;
+            }
+
+            rt_log("[Net] recv() error on FD %d (errno=%d). Closing.\n", poll_fds[i].fd, errno);
+            close(poll_fds[i].fd);
+            poll_fds[i].fd = -1;
+            client_buf_lens[i] = 0;
         }
     }
 }

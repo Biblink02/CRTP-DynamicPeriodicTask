@@ -14,6 +14,12 @@
 #include "task_routines.h"
 #include "logger.h"
 
+#define LOGGER_DESTROY  do {                                \
+                            logger_request_stop();          \
+                            pthread_join(log_thread, NULL); \
+                            logger_destroy();}              \
+                        while(false)
+
 atomic_bool keep_running = ATOMIC_VAR_INIT(true);
 
 static void sigusr1_handler(const int signum) { (void) signum; }
@@ -60,12 +66,11 @@ int main(void) {
         perror("[Main] Failed to set CPU affinity");
     }
 
-    /* Init Subsystems */
+    // Init Subsystems
     if (logger_init() != 0) return EXIT_FAILURE;
     if (supervisor_init() != 0) return EXIT_FAILURE;
     if (routines_init() != 0) return EXIT_FAILURE;
     if (runtime_init() != 0) return EXIT_FAILURE;
-
 
     if (net_init(SERVER_PORT) < 0) return EXIT_FAILURE;
 
@@ -75,7 +80,7 @@ int main(void) {
     /* Priorities Configuration
        Network:    99 (Highest - I/O Hardware)
        Supervisor: 98 (Logic Core)
-       Tasks:      90-1 (Application)
+       Tasks:      90-2 (Application)
        Logger:     1  (Lowest - Deferred I/O)
     */
     set_fifo_priority(&net_attr, 99);
@@ -84,12 +89,14 @@ int main(void) {
 
     if (pthread_create(&log_thread, &log_attr, logger_thread_entry, NULL) != 0) {
          fprintf(stderr, "[Main] CRITICAL: Failed to create Logger thread\n");
+         logger_destroy(); // Thread never started, just clean mutexes
          return EXIT_FAILURE;
     }
 
     if (pthread_create(&sv_thread, &sv_attr, supervisor_entry, NULL) != 0) {
         fprintf(stderr, "[Main] CRITICAL: Failed to create Supervisor thread\n");
-        logger_cleanup();
+        // Shutdown Logger
+        LOGGER_DESTROY;
         return EXIT_FAILURE;
     }
 
@@ -97,18 +104,15 @@ int main(void) {
         fprintf(stderr, "[Main] CRITICAL: Failed to create Network thread\n");
         atomic_store(&keep_running, false);
         pthread_join(sv_thread, NULL);
-        logger_cleanup();
+        LOGGER_DESTROY;
         return EXIT_FAILURE;
     }
 
-    // Wait for the Supervisor (Logic Core) to finish
     pthread_join(sv_thread, NULL);
 
-    // System is shutting down
     pthread_join(net_thread, NULL);
 
-    logger_cleanup(); // Signal logger to stop
-    pthread_join(log_thread, NULL); // Wait for logger to flush remaining buffer
+    LOGGER_DESTROY;
 
     net_cleanup();
     runtime_cleanup();
