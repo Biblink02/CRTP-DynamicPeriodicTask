@@ -15,51 +15,68 @@ static TaskInstance pool[MAX_INSTANCES];
 static pthread_mutex_t pool_mutex;
 static atomic_int id_counter = 1;
 
+// --- Time Helpers ---
+
 static long long diff_ns(const struct timespec t1, const struct timespec t2) {
     return (long long) (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
 }
 
+static inline void timespec_add_ns(struct timespec *t, const long long ns) {
+    t->tv_nsec += ns;
+    while (t->tv_nsec >= 1000000000LL) {
+        t->tv_sec++;
+        t->tv_nsec -= 1000000000LL;
+    }
+}
+
+static inline int timespec_cmp(const struct timespec *a, const struct timespec *b) {
+    if (a->tv_sec != b->tv_sec) return (a->tv_sec > b->tv_sec) ? 1 : -1;
+    if (a->tv_nsec != b->tv_nsec) return (a->tv_nsec > b->tv_nsec) ? 1 : -1;
+    return 0;
+}
+
+// --- Thread Loop ---
+
 static void *thread_entry(void *arg) {
-    const TaskInstance *inst = (TaskInstance *) arg;
-    struct timespec next_activation, start, end;
+    TaskInstance *inst = arg;
+    struct timespec next_activation, start, end, now;
     const long long period_ns = inst->type->period_ms * 1000000LL;
     const long long deadline_ns = inst->type->deadline_ms * 1000000LL;
 
-    // Anchor: Absolute time for first activation
     clock_gettime(CLOCK_MONOTONIC, &next_activation);
 
-    while (!inst->stop) {
+    while (!atomic_load_explicit(&inst->stop, memory_order_relaxed)) {
+
+        struct timespec release = next_activation;   // ideal activation for *this* job
+
         clock_gettime(CLOCK_MONOTONIC, &start);
-
-        // Execute Workload
         if (inst->type->routine_fn) inst->type->routine_fn();
-
         clock_gettime(CLOCK_MONOTONIC, &end);
 
-        // Check Deadline
-        const long long exec_time = diff_ns(start, end);
-        if (exec_time > deadline_ns) {
-            rt_log("[Runtime] DEADLINE MISS: Task %s (ID %d) | Exec: %.2f ms > Limit: %ld ms\n",
-                   inst->type->name,
-                   inst->id, exec_time / 1000000.0, inst->type->deadline_ms);
+        struct timespec abs_deadline = release;
+        timespec_add_ns(&abs_deadline, deadline_ns);
+
+        if (timespec_cmp(&end, &abs_deadline) > 0) {
+            const long long response_time = diff_ns(release, end);
+            rt_log("[Runtime] DEADLINE MISS: Task %s (ID %d) | Resp: %.2f ms > Limit: %ld ms\n",
+                   inst->type->name, inst->id, response_time / 1000000.0, inst->type->deadline_ms);
         }
 
-        // Calculate next absolute wake-up time (t_{k+1} = t_k + T)
-        // This prevents accumulated drift.
-        next_activation.tv_nsec += period_ns;
-        while (next_activation.tv_nsec >= 1000000000LL) {
-            next_activation.tv_sec++;
-            next_activation.tv_nsec -= 1000000000LL;
+        next_activation = release;
+        timespec_add_ns(&next_activation, period_ns);
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        while (timespec_cmp(&next_activation, &now) <= 0) {
+            timespec_add_ns(&next_activation, period_ns);
         }
 
-        // Sleep until next absolute time (TIMER_ABSTIME)
-        // Handles SIGUSR1 (EINTR) for immediate shutdown.
-        while (!inst->stop) {
+        while (!atomic_load_explicit(&inst->stop, memory_order_relaxed)) {
             int ret = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_activation, NULL);
             if (ret == 0) break;
             if (ret == EINTR) break;
         }
     }
+
     return NULL;
 }
 
@@ -71,6 +88,7 @@ int runtime_init(void) {
     for (int i = 0; i < MAX_INSTANCES; i++) {
         pool[i].active = false;
         pool[i].id = -1;
+        atomic_init(&pool[i].stop, false);
     }
     atomic_store(&id_counter, 1);
 
@@ -95,7 +113,7 @@ int runtime_create_instance(const TaskType *type) {
     TaskInstance *inst = &pool[idx];
     inst->id = atomic_fetch_add(&id_counter, 1);
     inst->type = type;
-    inst->stop = false;
+    atomic_store_explicit(&inst->stop, false, memory_order_relaxed);
     inst->active = true;
 
     pthread_attr_t attr;
@@ -141,13 +159,13 @@ int runtime_stop_instance(const int id) {
         return -1;
     }
 
-    pool[idx].stop = true;
-
-    // Interrupt nanosleep immediately to avoid waiting for the full period
-    pthread_kill(pool[idx].thread, SIGUSR1);
+    atomic_store_explicit(&pool[idx].stop, true, memory_order_relaxed);
+    const pthread_t t = pool[idx].thread;
 
     pthread_mutex_unlock(&pool_mutex);
-    pthread_join(pool[idx].thread, NULL);
+
+    pthread_kill(t, SIGUSR1);
+    pthread_join(t, NULL);
 
     pthread_mutex_lock(&pool_mutex);
     pool[idx].active = false;
@@ -158,19 +176,18 @@ int runtime_stop_instance(const int id) {
 
 void runtime_cleanup(void) {
     pthread_mutex_lock(&pool_mutex);
-    // Signal all threads to stop
     for (int i = 0; i < MAX_INSTANCES; i++) {
         if (pool[i].active) {
-            pool[i].stop = true;
+            atomic_store_explicit(&pool[i].stop, true, memory_order_relaxed);
             pthread_kill(pool[i].thread, SIGUSR1);
         }
     }
     pthread_mutex_unlock(&pool_mutex);
 
-    // Join all threads
     for (int i = 0; i < MAX_INSTANCES; i++) {
         pthread_t t = 0;
         bool active = false;
+
         pthread_mutex_lock(&pool_mutex);
         if (pool[i].active) {
             t = pool[i].thread;
@@ -178,6 +195,12 @@ void runtime_cleanup(void) {
         }
         pthread_mutex_unlock(&pool_mutex);
 
-        if (active) pthread_join(t, NULL);
+        if (active) {
+            pthread_join(t, NULL);
+            pthread_mutex_lock(&pool_mutex);
+            pool[i].active = false;
+            pool[i].id = -1;
+            pthread_mutex_unlock(&pool_mutex);
+        }
     }
 }
