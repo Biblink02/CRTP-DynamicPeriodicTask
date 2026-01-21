@@ -6,7 +6,7 @@
  * Performs CPU calibration to determine loops_per_ms.
  * Initializes the static task catalog.
  */
-void routines_init(void);
+int routines_init(void);
 
 /**
  * Look up a task definition by its name.

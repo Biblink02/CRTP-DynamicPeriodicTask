@@ -6,7 +6,7 @@
  * Initializes the thread pool and synchronization primitives.
  * Must be called before creating any instance.
  */
-void runtime_init(void);
+int runtime_init(void);
 
 /**
  * Spawns a new real-time thread for the given task type.

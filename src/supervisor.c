@@ -4,6 +4,8 @@
 #include <math.h>
 #include <string.h>
 #include "supervisor.h"
+
+#include "logger.h"
 #include "task_routines.h"
 #include "task_runtime.h"
 #include "net_core.h"
@@ -25,15 +27,30 @@ static struct {
 } active_set[MAX_INSTANCES];
 
 static int active_count = 0;
-static pthread_mutex_t active_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t active_mutex;
 
-void supervisor_init(void) {
+int supervisor_init(void) {
     queue.head = 0;
     queue.tail = 0;
     queue.count = 0;
-    pthread_mutex_init(&queue.mutex, NULL);
-    pthread_cond_init(&queue.cond, NULL);
-    printf("[Supervisor] Subsystem Initialized.\n");
+
+    if (pthread_mutex_init(&queue.mutex, NULL) != 0) {
+        return -1;
+    }
+
+    if (pthread_cond_init(&queue.cond, NULL) != 0) {
+        pthread_mutex_destroy(&queue.mutex);
+        return -1;
+    }
+
+    if (pthread_mutex_init(&active_mutex, NULL) != 0) {
+        pthread_cond_destroy(&queue.cond);
+        pthread_mutex_destroy(&queue.mutex);
+        return -1;
+    }
+
+    rt_log("[Supervisor] Subsystem Initialized.\n");
+    return 0;
 }
 
 int supervisor_push_event(const Event ev) {
@@ -64,6 +81,18 @@ static Event queue_pop(void) {
 
 // --- Response Time Analysis ---
 
+/*
+ * Calculates total utilization of currently active tasks.
+ * WARNING: Must be called with active_mutex LOCKED.
+ */
+static double get_active_utilization_locked(void) {
+    double u = 0.0;
+    for (int i = 0; i < active_count; i++) {
+        u += (double) active_set[i].type->wcet_ms / (double) active_set[i].type->period_ms;
+    }
+    return u;
+}
+
 static int compare_period(const void *a, const void *b) {
     const TaskType *ta = *(const TaskType **) a;
     const TaskType *tb = *(const TaskType **) b;
@@ -73,19 +102,21 @@ static int compare_period(const void *a, const void *b) {
 static int check_rta(const TaskType *candidate) {
     const TaskType *tasks[MAX_INSTANCES + 1];
     int count = 0;
+    double current_util = 0.0;
 
     pthread_mutex_lock(&active_mutex);
+    current_util = get_active_utilization_locked();
     for (int i = 0; i < active_count; i++) tasks[count++] = active_set[i].type;
     pthread_mutex_unlock(&active_mutex);
+
     tasks[count++] = candidate;
 
     // Utilization Test (Necessary Condition)
-    double util = 0;
-    for (int i = 0; i < count; i++) {
-        util += (double) tasks[i]->wcet_ms / (double) tasks[i]->period_ms;
-    }
-    if (util > 1.0) {
-        printf("[RTA] Rejected %s: Utilization %.2f > 1.0\n", candidate->name, util);
+    const double candidate_util = (double) candidate->wcet_ms / (double) candidate->period_ms;
+    const double total_util = current_util + candidate_util;
+
+    if (total_util > 1.0) {
+        rt_log("[RTA] Rejected %s: Utilization %.2f%% > 100%%\n", candidate->name, total_util * 100.0);
         return 0;
     }
 
@@ -105,7 +136,7 @@ static int check_rta(const TaskType *candidate) {
             R_new = (double) tasks[i]->wcet_ms + I;
 
             if (R_new > (double) tasks[i]->deadline_ms) {
-                printf("[RTA] Rejected %s: R=%.1f > D=%ld\n", candidate->name, R_new, tasks[i]->deadline_ms);
+                rt_log("[RTA] Rejected %s: R=%.1f > D=%ld\n", candidate->name, R_new, tasks[i]->deadline_ms);
                 return 0;
             }
             if (R_new == R) {
@@ -154,7 +185,7 @@ static void handle_activate(const Event ev) {
         active_set[active_count].instance_id = id;
         active_count++;
         snprintf(resp, sizeof(resp), "OK ID=%d\n", id);
-        printf("[Supervisor] Activated task '%s' as ID %d (Total: %d)\n", task->name, id, active_count);
+        rt_log("[Supervisor] Activated task '%s' as ID %d (Total: %d)\n", task->name, id, active_count);
     } else {
         // Safe fallback in case of race condition
         runtime_stop_instance(id);
@@ -183,7 +214,7 @@ static void handle_deactivate(const Event ev) {
         pthread_mutex_unlock(&active_mutex);
 
         net_send_response(ev.client_fd, "OK\n");
-        printf("[Supervisor] Deactivated task ID %d\n", id);
+        rt_log("[Supervisor] Deactivated task ID %d\n", id);
     } else {
         net_send_response(ev.client_fd, "ERR Invalid ID\n");
     }
@@ -192,8 +223,11 @@ static void handle_deactivate(const Event ev) {
 static void handle_list(const Event ev) {
     char resp[NET_RESPONSE_BUF_SIZE];
     int off = 0;
+
     pthread_mutex_lock(&active_mutex);
-    off += snprintf(resp + off, sizeof(resp) - off, "Running: %d\n", active_count);
+    const double util = get_active_utilization_locked();
+
+    off += snprintf(resp + off, sizeof(resp) - off, "Running: %d | CPU Load: %.2f%%\n", active_count, util * 100.0);
     for (int i = 0; i < active_count; i++) {
         if (sizeof(resp) - off < 100) break;
         off += snprintf(resp + off, sizeof(resp) - off, "  [ID %d] %s (C=%ld, T=%ld)\n",
@@ -217,7 +251,7 @@ static void handle_info(const Event ev) {
 }
 
 void supervisor_loop(void) {
-    printf("[Supervisor] Event Loop Started.\n");
+    rt_log("[Supervisor] Event Loop Started.\n");
     while (1) {
         const Event ev = queue_pop();
         switch (ev.type) {
@@ -230,7 +264,7 @@ void supervisor_loop(void) {
             case EV_INFO: handle_info(ev);
                 break;
             case EV_SHUTDOWN:
-                printf("[Supervisor] Shutdown signal received.\n");
+                rt_log("[Supervisor] Shutdown signal received.\n");
                 return;
             default: break;
         }

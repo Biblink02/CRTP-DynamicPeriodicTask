@@ -15,6 +15,8 @@ set(DYNAMIC_PERIODIC_TASK
         src/task_routines.c
         src/task_runtime.c
         src/utils/event.c
+        include/utils/logger.h
+        src/utils/logger.c
 )
 
 add_executable(dynamic_periodic_task ${DYNAMIC_PERIODIC_TASK})

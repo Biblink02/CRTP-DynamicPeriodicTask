@@ -7,7 +7,7 @@
  * Initializes the supervisor queue and synchronization primitives.
  * Must be called before starting the supervisor loop or pushing events.
  */
-void supervisor_init(void);
+int supervisor_init(void);
 
 /**
  * Main loop. Initializes subsystems and processes the event queue.

@@ -9,8 +9,10 @@
 #include <signal.h>
 #include "task_runtime.h"
 
+#include "logger.h"
+
 static TaskInstance pool[MAX_INSTANCES];
-static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t pool_mutex;
 static atomic_int id_counter = 1;
 
 static long long diff_ns(const struct timespec t1, const struct timespec t2) {
@@ -37,7 +39,7 @@ static void *thread_entry(void *arg) {
         // Check Deadline
         const long long exec_time = diff_ns(start, end);
         if (exec_time > deadline_ns) {
-            printf("[Runtime] DEADLINE MISS: Task %s (ID %d) | Exec: %.2f ms > Limit: %ld ms\n",
+            rt_log("[Runtime] DEADLINE MISS: Task %s (ID %d) | Exec: %.2f ms > Limit: %ld ms\n",
                    inst->type->name,
                    inst->id, exec_time / 1000000.0, inst->type->deadline_ms);
         }
@@ -61,14 +63,18 @@ static void *thread_entry(void *arg) {
     return NULL;
 }
 
-void runtime_init(void) {
-    pthread_mutex_lock(&pool_mutex);
+int runtime_init(void) {
+    if (pthread_mutex_init(&pool_mutex, NULL) != 0) {
+        return -1;
+    }
+
     for (int i = 0; i < MAX_INSTANCES; i++) {
         pool[i].active = false;
         pool[i].id = -1;
     }
     atomic_store(&id_counter, 1);
-    pthread_mutex_unlock(&pool_mutex);
+
+    return 0;
 }
 
 int runtime_create_instance(const TaskType *type) {
@@ -100,9 +106,10 @@ int runtime_create_instance(const TaskType *type) {
     pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
 
     // RMS: Higher frequency = Higher Priority
-    // Mapped to range [1, 90] to leave room for system threads
-    int prio = 90 - (int) (type->period_ms / 100);
-    param.sched_priority = (prio < 1) ? 1 : (prio > 90) ? 90 : prio;
+    // Mapped to range [2, 90] to leave room for system threads
+    // Logger is at 1, so the lowest task priority must be 2.
+    const int prio = 90 - (int) (type->period_ms / 100);
+    param.sched_priority = prio < 2 ? 2 : prio > 90 ? 90 : prio;
     pthread_attr_setschedparam(&attr, &param);
 
     if (pthread_create(&inst->thread, &attr, thread_entry, inst) != 0) {

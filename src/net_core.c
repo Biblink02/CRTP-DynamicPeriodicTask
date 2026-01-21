@@ -9,6 +9,7 @@
 #include "net_core.h"
 #include "supervisor.h"
 #include "event.h"
+#include "logger.h"
 
 static struct pollfd poll_fds[MAX_CLIENTS + 1];
 static char client_buffers[MAX_CLIENTS + 1][NET_BUFFER_SIZE];
@@ -50,7 +51,7 @@ int net_init(const int port) {
     poll_fds[0].fd = server_fd;
     poll_fds[0].events = POLLIN;
 
-    printf("[Net] Server listening on port %d\n", port);
+    rt_log("[Net] Server listening on port %d\n", port);
     return 0;
 }
 
@@ -89,12 +90,12 @@ void net_poll(void) {
                     poll_fds[i].events = POLLIN;
                     client_buf_lens[i] = 0;
                     added = 1;
-                    printf("[Net] Client connected on FD %d\n", new_sock);
+                    rt_log("[Net] Client connected on FD %d\n", new_sock);
                     break;
                 }
             }
             if (!added) {
-                printf("[Net] Max clients reached, rejecting FD %d\n", new_sock);
+                rt_log("[Net] Max clients reached, rejecting FD %d\n", new_sock);
                 close(new_sock);
             }
         }
@@ -131,10 +132,10 @@ void net_poll(void) {
                 } else {
                     client_buf_lens[i] = 0; // Reset buffer on overflow
                     net_send_response(poll_fds[i].fd, "ERR Buffer Overflow\n");
-                    printf("[Net] Buffer overflow on FD %d. Dropped data.\n", poll_fds[i].fd);
+                    rt_log("[Net] Buffer overflow on FD %d. Dropped data.\n", poll_fds[i].fd);
                 }
             } else {
-                printf("[Net] Client FD %d disconnected\n", poll_fds[i].fd);
+                rt_log("[Net] Client FD %d disconnected\n", poll_fds[i].fd);
                 close(poll_fds[i].fd);
                 poll_fds[i].fd = -1;
                 client_buf_lens[i] = 0;

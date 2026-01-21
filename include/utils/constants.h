@@ -14,4 +14,6 @@
 #define MAX_QUEUE_SIZE 20
 #define TASK_NAME_LEN 32
 
+#define LOGGER_BUFFER_SIZE 16384
+#define MAX_LOG_MSG_LEN 256
 #endif

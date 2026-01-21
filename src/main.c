@@ -12,16 +12,16 @@
 #include "constants.h"
 #include "task_runtime.h"
 #include "task_routines.h"
+#include "logger.h"
 
 atomic_bool keep_running = ATOMIC_VAR_INIT(true);
 
-// Empty handler to interrupt blocking syscalls (e.g., nanosleep)
 static void sigusr1_handler(const int signum) { (void) signum; }
 
 static void setup_signals(void) {
     struct sigaction sa;
     sa.sa_handler = sigusr1_handler;
-    sa.sa_flags = 0; // No SA_RESTART: ensure blocking calls return EINTR
+    sa.sa_flags = 0;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR1, &sa, NULL);
 }
@@ -46,7 +46,7 @@ static void set_fifo_priority(pthread_attr_t *attr, const int prio) {
 }
 
 int main(void) {
-    setvbuf(stdout, NULL, _IONBF, 0); // Disable buffering for real-time logs
+    setvbuf(stdout, NULL, _IONBF, 0);
     setup_signals();
 
     if (geteuid() != 0) {
@@ -60,26 +60,36 @@ int main(void) {
         perror("[Main] Failed to set CPU affinity");
     }
 
-    /* Initialize ALL internal subsystems before creating threads or opening sockets.
-       This prevents race conditions where the network thread accepts a client
-       before the supervisor or task lists are ready. */
+    /* Init Subsystems */
+    if (logger_init() != 0) return EXIT_FAILURE;
+    if (supervisor_init() != 0) return EXIT_FAILURE;
+    if (routines_init() != 0) return EXIT_FAILURE;
+    if (runtime_init() != 0) return EXIT_FAILURE;
 
-    supervisor_init();
-    routines_init();
-    runtime_init();
 
-    // Open network port only after internals are ready
     if (net_init(SERVER_PORT) < 0) return EXIT_FAILURE;
 
-    pthread_t net_thread, sv_thread;
-    pthread_attr_t net_attr, sv_attr;
+    pthread_t net_thread, sv_thread, log_thread;
+    pthread_attr_t net_attr, sv_attr, log_attr;
 
-    // Priorities: Network (99) > Supervisor (98) > Tasks (max 90)
+    /* Priorities Configuration
+       Network:    99 (Highest - I/O Hardware)
+       Supervisor: 98 (Logic Core)
+       Tasks:      90-1 (Application)
+       Logger:     1  (Lowest - Deferred I/O)
+    */
     set_fifo_priority(&net_attr, 99);
     set_fifo_priority(&sv_attr, 98);
+    set_fifo_priority(&log_attr, 1);
+
+    if (pthread_create(&log_thread, &log_attr, logger_thread_entry, NULL) != 0) {
+         fprintf(stderr, "[Main] CRITICAL: Failed to create Logger thread\n");
+         return EXIT_FAILURE;
+    }
 
     if (pthread_create(&sv_thread, &sv_attr, supervisor_entry, NULL) != 0) {
         fprintf(stderr, "[Main] CRITICAL: Failed to create Supervisor thread\n");
+        logger_cleanup();
         return EXIT_FAILURE;
     }
 
@@ -87,11 +97,18 @@ int main(void) {
         fprintf(stderr, "[Main] CRITICAL: Failed to create Network thread\n");
         atomic_store(&keep_running, false);
         pthread_join(sv_thread, NULL);
+        logger_cleanup();
         return EXIT_FAILURE;
     }
 
+    // Wait for the Supervisor (Logic Core) to finish
     pthread_join(sv_thread, NULL);
+
+    // System is shutting down
     pthread_join(net_thread, NULL);
+
+    logger_cleanup(); // Signal logger to stop
+    pthread_join(log_thread, NULL); // Wait for logger to flush remaining buffer
 
     net_cleanup();
     runtime_cleanup();
