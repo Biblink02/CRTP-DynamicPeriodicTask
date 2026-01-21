@@ -18,14 +18,14 @@ int event_parse(const char *line, const int client_fd, Event *out_event) {
     if (strcasecmp(cmd, "ACTIVATE") == 0 || strcasecmp(cmd, "A") == 0) {
         if (tokens < 2) return -1;
         out_event->type = EV_ACTIVATE;
-        strncpy(out_event->payload.task_name, arg, TASK_NAME_LEN - 1);
+        snprintf(out_event->payload.task_name, TASK_NAME_LEN, "%s", arg);
         return 0;
     }
 
     if (strcasecmp(cmd, "DEACTIVATE") == 0 || strcasecmp(cmd, "D") == 0) {
         if (tokens < 2) return -1;
         char *end;
-        long val = strtol(arg, &end, 10);
+        const long val = strtol(arg, &end, 10);
         if (*end != '\0') return -1;
         out_event->type = EV_DEACTIVATE;
         out_event->payload.target_id = val;
