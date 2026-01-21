@@ -33,7 +33,10 @@ The project includes a predefined catalog defined in `src/task_routines.c`:
 
 ### Prerequisites
 - Linux (required for `SCHED_FIFO` and CPU affinity).
-- CMake ≥ 3.16, GCC/Clang, Python 3 (for tests).
+
+
+- CMake ≥ 3.16, GCC/Clang, Ninja, Python 3 (for tests).
+- Else there is a Makefile to compile with `make`
 
 ### Compilation
 ```bash
