@@ -1,29 +1,39 @@
 # Real-Time Dynamic Periodic Task Supervisor
 
-**Course:** Concurrent and Real-Time Programming (CRTP)  
-**University of Padova** **Professors:** Andrea Rigoni Garola, Gabriele Manduchi
+**University of Padova**
 
----
 
-## 🚀 Project Overview
+**Course:** Concurrent and Real-Time Programming (CRTP)
 
-This project implements a soft/hard real-time supervisor capable of dynamically accepting task requests over TCP, verifying system schedulability using **Response Time Analysis (RTA)**, and executing accepted tasks with strict timing guarantees using `SCHED_FIFO`.
+**Professors:** Andrea Rigoni Garola, Gabriele Manduchi
 
-### Features
-* **Zero-Accumulated Drift:** Uses `clock_nanosleep` with `TIMER_ABSTIME`.
-* **I/O Multiplexing:** Single-threaded network core using `poll()`.
-* **Concurrency:** Thread-safe supervisor queue and atomic shutdowns.
-* **Memory Safety:** Robust handling of TCP fragmentation and buffer overflows.
+## Project Overview
+This project implements a real-time supervisor that accepts task activation/deactivation requests over TCP and admits tasks only if the system remains schedulable via **Response Time Analysis (RTA)**. Accepted tasks run as `SCHED_FIFO` threads, with fixed priorities mapped from their periods (shorter period ⇒ higher priority, RMS-style).
 
----
+### Key Features
+- **Admission control (RTA):** Before spawning a new instance, the supervisor runs a utilization check and an RTA test against each task deadline.
+- **Zero accumulated drift:** Each task sleeps using `clock_nanosleep(..., TIMER_ABSTIME, ...)` to keep a stable time grid.
+- **I/O multiplexing:** A single network thread uses `poll()` with non-blocking sockets (`O_NONBLOCK`) to serve multiple clients.
+- **Memory safety:** Per-client buffering handles TCP fragmentation and detects buffer overflows.
+- **Non-blocking logging:** Real-time threads avoid blocking on `printf()` by logging through a low-priority logger thread using a `try_lock` approach on the buffer.
 
-## 🛠 Build & Run
+## Assignment
+The goal is to define a fixed catalog of periodic routines. A TCP server must accept activation/deactivation commands; each activation spawns a new thread instance. Before accepting a new activation, Response Time Analysis determines if the system stays schedulable.
+
+## Task Catalog
+The project includes a predefined catalog defined in `src/task_routines.c`:
+
+| Task | WCET (ms) | Period (ms) | Deadline (ms) |
+| :--- | :-------: | :---------: | :-----------: |
+| **t1** | 50        | 300         | 300           |
+| **t2** | 100       | 500         | 500           |
+| **t3** | 200       | 1000        | 1000          |
+
+## Build & Run
 
 ### Prerequisites
-* Linux (Required for `SCHED_FIFO` and `pthread_setaffinity_np`)
-* CMake >= 3.16
-* GCC/Clang
-* Python 3 (for testing)
+- Linux (required for `SCHED_FIFO` and CPU affinity).
+- CMake ≥ 3.16, GCC/Clang, Python 3 (for tests).
 
 ### Compilation
 ```bash
@@ -31,27 +41,21 @@ bash build.sh
 ```
 
 ### Running
-**Note:** Root privileges are required to set Real-Time priorities (`SCHED_FIFO`).
-
+Root privileges are typically required to run with real-time scheduling.
 ```bash
 sudo ./build/dynamic_periodic_task
 ```
 
 ### Running Tests
-The test suite handles startup timing automatically, even under Valgrind.
-
 ```bash
 sudo bash build.sh --test
 ```
 
----
+## Protocol
+Connect via Telnet/Netcat on port **8080**.
 
-## 📡 Protocol
-
-Connect via Telnet/Netcat on port `8080`:
-
-* `ACTIVATE <task_name>`: Starts a task (e.g., `A t1`). Returns `ID=<id>`.
-* `DEACTIVATE <id>`: Stops a specific instance (e.g., `D 1`).
-* `LIST`: Shows active instances.
-* `INFO`: Shows task catalog and system capacity.
-* `SHUTDOWN`: Gracefully terminates the server.
+- `ACTIVATE <task_name>` (or `A`): Start a new instance. Returns `ID=<id>`.
+- `DEACTIVATE <id>` (or `D`): Stop a specific instance.
+- `LIST` (or `L`): List active instances and current CPU load estimate.
+- `INFO` (or `I`): Show task catalog and system capacity.
+- `SHUTDOWN` (or `S`): Terminate the server.
