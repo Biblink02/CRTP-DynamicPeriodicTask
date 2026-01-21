@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -33,11 +35,13 @@ static void setup_signals(void) {
 }
 
 static void *network_entry(void *arg) {
+    (void) arg;
     while (atomic_load(&keep_running)) net_poll();
     return NULL;
 }
 
 static void *supervisor_entry(void *arg) {
+    (void) arg;
     supervisor_loop();
     atomic_store(&keep_running, false);
     return NULL;
@@ -51,7 +55,7 @@ static void set_fifo_priority(pthread_attr_t *attr, const int prio) {
     pthread_attr_setschedparam(attr, &param);
 }
 
-int main(void) {
+int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
     setup_signals();
 
@@ -88,9 +92,9 @@ int main(void) {
     set_fifo_priority(&log_attr, 1);
 
     if (pthread_create(&log_thread, &log_attr, logger_thread_entry, NULL) != 0) {
-         fprintf(stderr, "[Main] CRITICAL: Failed to create Logger thread\n");
-         logger_destroy(); // Thread never started, just clean mutexes
-         return EXIT_FAILURE;
+        fprintf(stderr, "[Main] CRITICAL: Failed to create Logger thread\n");
+        logger_destroy(); // Thread never started, just clean mutexes
+        return EXIT_FAILURE;
     }
 
     if (pthread_create(&sv_thread, &sv_attr, supervisor_entry, NULL) != 0) {
