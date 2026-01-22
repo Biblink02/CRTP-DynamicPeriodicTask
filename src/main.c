@@ -55,7 +55,7 @@ static void set_fifo_priority(pthread_attr_t *attr, const int prio) {
 }
 
 int main() {
-    setvbuf(stdout, NULL, _IONBF, 0);
+    //setvbuf(stdout, NULL, _IONBF, 0);
     setup_signals();
 
     if (geteuid() != 0) {

@@ -29,17 +29,24 @@ static inline void workload(const double i) {
 static void calibrate(void) {
     struct timespec s, e;
     unsigned long long count = 0;
-    const long long target_ns = NSEC_PER_SEC; // 1 s
 
-    rt_log("[Routines] Calibrating CPU (target: 100ms sample)...\n");
+    const long long target_ns = (long long) (CALIBRATION_SECONDS * NSEC_PER_SEC);
+
+    rt_log("[Routines] Calibrating CPU (target: %.3f s)...\n", CALIBRATION_SECONDS);
+
     clock_gettime(CLOCK_MONOTONIC, &s);
     do {
         workload((double) count++);
         clock_gettime(CLOCK_MONOTONIC, &e);
-    } while ((double) (e.tv_sec - s.tv_sec) * 1e9 + (double) (e.tv_nsec - s.tv_nsec) < (double) target_ns);
+    } while ((long long) (e.tv_sec - s.tv_sec) * NSEC_PER_SEC + (long long) (e.tv_nsec - s.tv_nsec) < target_ns);
 
-    loops_per_ms = count / 100;
-    rt_log("[Routines] Calibration done: %llu loops/ms\n", loops_per_ms);
+    const double elapsed_ms = (double) (e.tv_sec - s.tv_sec) * MSEC_PER_SEC + (double) (e.tv_nsec - s.tv_nsec) / NSEC_PER_MSEC;
+
+    loops_per_ms = (unsigned long long) ((double) count / elapsed_ms);
+    if (loops_per_ms == 0) loops_per_ms = 1;
+
+    rt_log("[Routines] Calibration done: %llu loops/ms (elapsed %.2f ms)\n",
+           loops_per_ms, elapsed_ms);
 }
 
 static void burn(const long ms) {
