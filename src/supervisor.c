@@ -102,10 +102,9 @@ static int compare_period(const void *a, const void *b) {
 static int check_rta(const TaskType *candidate) {
     const TaskType *tasks[MAX_INSTANCES + 1];
     int count = 0;
-    double current_util = 0.0;
 
     pthread_mutex_lock(&active_mutex);
-    current_util = get_active_utilization_locked();
+    const double current_util = get_active_utilization_locked();
     for (int i = 0; i < active_count; i++) tasks[count++] = active_set[i].type;
     pthread_mutex_unlock(&active_mutex);
 
@@ -125,22 +124,21 @@ static int check_rta(const TaskType *candidate) {
 
     for (int i = 0; i < count; i++) {
         double R = (double) tasks[i]->wcet_ms;
-        double R_new = R;
-        int converged = 0;
+        bool converged = false;
 
         for (int k = 0; k < 100; k++) {
             double I = 0;
             for (int j = 0; j < i; j++) {
                 I += ceil(R / (double) tasks[j]->period_ms) * (double) tasks[j]->wcet_ms;
             }
-            R_new = (double) tasks[i]->wcet_ms + I;
+            const double R_new = (double) tasks[i]->wcet_ms + I;
 
             if (R_new > (double) tasks[i]->deadline_ms) {
                 rt_log("[RTA] Rejected %s: R=%.1f > D=%ld\n", candidate->name, R_new, tasks[i]->deadline_ms);
                 return 0;
             }
             if (R_new == R) {
-                converged = 1;
+                converged = true;
                 break;
             }
             R = R_new;

@@ -29,7 +29,7 @@ static inline void workload(const double i) {
 static void calibrate(void) {
     struct timespec s, e;
     unsigned long long count = 0;
-    const long long target_ns = 100000000; // 1 s
+    const long long target_ns = NSEC_PER_SEC; // 1 s
 
     rt_log("[Routines] Calibrating CPU (target: 100ms sample)...\n");
     clock_gettime(CLOCK_MONOTONIC, &s);
@@ -51,7 +51,10 @@ static void task_t1(void) { burn(50); }
 static void task_t2(void) { burn(100); }
 static void task_t3(void) { burn(200); }
 
-int routines_init(void) { calibrate(); return 0; }
+int routines_init(void) {
+    calibrate();
+    return 0;
+}
 
 const TaskType *routines_get_by_name(const char *name) {
     if (!name) return NULL;

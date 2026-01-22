@@ -20,36 +20,42 @@ static atomic_int id_counter = 1;
 // --- Time Helpers ---
 
 static long long diff_ns(const struct timespec t1, const struct timespec t2) {
-    return (long long) (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
+    return (long long) (t2.tv_sec - t1.tv_sec) * NSEC_PER_SEC + (t2.tv_nsec - t1.tv_nsec);
 }
 
 static inline void timespec_add_ns(struct timespec *t, const long long ns) {
-    t->tv_nsec += ns;
-    while (t->tv_nsec >= 1000000000LL) {
+    t->tv_sec += ns / NSEC_PER_SEC;
+    t->tv_nsec += ns % NSEC_PER_SEC;
+
+    // normalize
+    if (t->tv_nsec >= NSEC_PER_SEC) {
         t->tv_sec++;
-        t->tv_nsec -= 1000000000LL;
+        t->tv_nsec -= NSEC_PER_SEC;
+    } else if (t->tv_nsec < 0) {
+        t->tv_sec--;
+        t->tv_nsec += NSEC_PER_SEC;
     }
 }
 
 static inline int timespec_cmp(const struct timespec *a, const struct timespec *b) {
-    if (a->tv_sec != b->tv_sec) return (a->tv_sec > b->tv_sec) ? 1 : -1;
-    if (a->tv_nsec != b->tv_nsec) return (a->tv_nsec > b->tv_nsec) ? 1 : -1;
+    if (a->tv_sec != b->tv_sec) return a->tv_sec > b->tv_sec ? 1 : -1;
+    if (a->tv_nsec != b->tv_nsec) return a->tv_nsec > b->tv_nsec ? 1 : -1;
     return 0;
 }
+
 
 // --- Thread Loop ---
 
 static void *thread_entry(void *arg) {
     TaskInstance *inst = arg;
-    struct timespec next_activation, start, end, now;
-    const long long period_ns = inst->type->period_ms * 1000000LL;
-    const long long deadline_ns = inst->type->deadline_ms * 1000000LL;
+    struct timespec activation, start, end, now;
+    const long long period_ns = inst->type->period_ms * NSEC_PER_MSEC;
+    const long long deadline_ns = inst->type->deadline_ms * NSEC_PER_MSEC;
 
-    clock_gettime(CLOCK_MONOTONIC, &next_activation);
+    clock_gettime(CLOCK_MONOTONIC, &activation);
 
     while (!atomic_load_explicit(&inst->stop, memory_order_relaxed)) {
-
-        struct timespec release = next_activation;   // ideal activation for *this* job
+        const struct timespec release = activation; // ideal activation for *this* job
 
         clock_gettime(CLOCK_MONOTONIC, &start);
         if (inst->type->routine_fn) inst->type->routine_fn();
@@ -61,19 +67,19 @@ static void *thread_entry(void *arg) {
         if (timespec_cmp(&end, &abs_deadline) > 0) {
             const long long response_time = diff_ns(release, end);
             rt_log("[Runtime] DEADLINE MISS: Task %s (ID %d) | Resp: %.2f ms > Limit: %ld ms\n",
-                   inst->type->name, inst->id, response_time / 1000000.0, inst->type->deadline_ms);
+                   inst->type->name, inst->id, (double) response_time / NSEC_PER_MSEC, inst->type->deadline_ms);
         }
 
-        next_activation = release;
-        timespec_add_ns(&next_activation, period_ns);
+        activation = release;
+        timespec_add_ns(&activation, period_ns);
 
         clock_gettime(CLOCK_MONOTONIC, &now);
-        while (timespec_cmp(&next_activation, &now) <= 0) {
-            timespec_add_ns(&next_activation, period_ns);
+        while (timespec_cmp(&activation, &now) <= 0) {
+            timespec_add_ns(&activation, period_ns);
         }
 
         while (!atomic_load_explicit(&inst->stop, memory_order_relaxed)) {
-            int ret = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_activation, NULL);
+            const int ret = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &activation, NULL);
             if (ret == 0) break;
             if (ret == EINTR) break;
         }

@@ -23,7 +23,7 @@ int net_init(const int port) {
         memset(client_buffers[i], 0, NET_BUFFER_SIZE);
     }
 
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) return -1;
 
     const int opt = 1;

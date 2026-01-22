@@ -56,7 +56,7 @@ int logger_init(void) {
 }
 
 void *logger_thread_entry(void *arg) {
-    (void)arg;
+    (void) arg;
     char local_buf[MAX_LOG_MSG_LEN];
 
     while (true) {
@@ -129,12 +129,12 @@ void rt_log(const char *fmt, ...) {
     }
 
     size_t write_len;
-    if ((size_t)len >= sizeof(temp_buf)) {
+    if ((size_t) len >= sizeof(temp_buf)) {
         temp_buf[MAX_LOG_MSG_LEN - 1] = '\0';
         write_len = sizeof(temp_buf);
         atomic_fetch_add_explicit(&ctx.truncated_msgs, 1, memory_order_relaxed);
     } else {
-        write_len = (size_t)len + 1;
+        write_len = (size_t) len + 1;
     }
 
     const size_t free_space = LOGGER_BUFFER_SIZE - ctx.count;

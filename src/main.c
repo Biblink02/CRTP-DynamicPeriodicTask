@@ -7,7 +7,6 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
-#include <errno.h>
 #include <signal.h>
 #include "supervisor.h"
 #include "net_core.h"
